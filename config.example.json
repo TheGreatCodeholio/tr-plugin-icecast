@@ -1,0 +1,42 @@
+{
+  "_comment": "Global config must have \"audioStreaming\": true.",
+  "name": "Icecast Bridge",
+  "library": "libtr_plugin_icecast.so",
+
+  "host": "icecast.example.com",
+  "port": 8000,
+  "source_user": "source",
+  "source_password": "REPLACE_ME",
+
+  "mounts": [
+    {
+      "mount": "/dispatch.mp3",
+      "name": "Dispatch",
+      "description": "Combined fire/EMS dispatch (FIFO across talkgroups)",
+      "genre": "Public Safety",
+      "public": false,
+      "sample_rate": 22050,
+      "bitrate": 64,
+      "channels": 1
+    },
+    {
+      "mount": "/ops.mp3",
+      "name": "Operations",
+      "sample_rate": 22050,
+      "bitrate": 64,
+      "channels": 1
+    }
+  ],
+
+  "systems": [
+    {
+      "shortName": "your_system",
+      "_comment": "Multiple talkgroups can map to the same mount — calls are streamed FIFO in arrival order.",
+      "talkgroups": {
+        "30001": "/dispatch.mp3",
+        "30002": "/dispatch.mp3",
+        "30010": "/ops.mp3"
+      }
+    }
+  ]
+}
