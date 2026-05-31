@@ -64,6 +64,26 @@ inline void apply_gain(int16_t* samples, int count, float gain) {
     }
 }
 
+// Strip ANSI terminal escape sequences (e.g. \033[0m) from a string.
+// trunk-recorder's get_talkgroup_display() embeds color codes intended for
+// terminal output; these appear as garbage characters in ICY metadata.
+std::string strip_ansi(const std::string& in) {
+    std::string out;
+    out.reserve(in.size());
+    bool in_esc = false;
+    for (size_t i = 0; i < in.size(); ++i) {
+        if (in_esc) {
+            if (std::isalpha(static_cast<unsigned char>(in[i]))) in_esc = false;
+        } else if (in[i] == '\033' && i + 1 < in.size() && in[i+1] == '[') {
+            in_esc = true;
+            ++i;  // skip '['
+        } else {
+            out.push_back(in[i]);
+        }
+    }
+    return out;
+}
+
 // Build the ICY StreamTitle string shown in listeners' players.
 // Format: "TG: <talkgroup_display> (<talkgroup>) <talker_alias> <HH:MM:SS>"
 //
@@ -87,7 +107,7 @@ std::string build_metadata(const std::string& talkgroup_display,
     std::strftime(timebuf, sizeof(timebuf), "%H:%M:%S", &tm_local);
 
     std::ostringstream oss;
-    oss << "TG: " << talkgroup_display
+    oss << "TG: " << strip_ansi(talkgroup_display)
         << " (" << talkgroup << ")";
     if (!talker_alias.empty()) {
         oss << " " << talker_alias;
