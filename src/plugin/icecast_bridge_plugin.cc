@@ -123,20 +123,23 @@ std::string substitute(const std::string& fmt,
 // Build the ICY StreamTitle string from a format template.
 //
 // Supported placeholders:
-//   {talkgroup_display} - alpha tag / display name (ANSI codes stripped)
+//   {talkgroup_display} - formatted display string (ANSI stripped)
+//   {talkgroup_tag}     - raw alpha tag, no ANSI codes
 //   {talkgroup}         - numeric TGID
-//   {talker_alias}      - unit tag if found, else src_id if > 0, else ""
-//                         (collapses surrounding space when empty)
+//   {talker_alias}      - unit tag if found, src ID if not, collapses if src 0
 //   {time}              - local HH:MM:SS
 //   {short_name}        - system short name
-//   {freq}              - frequency in MHz (6 decimal places)
+//   {freq}              - frequency in MHz
+//   {emergency}         - "EMERGENCY" when true, collapses with surrounding space if false
 std::string build_metadata(const std::string& fmt,
                             const std::string& talkgroup_display,
+                            const std::string& talkgroup_tag,
                             long talkgroup,
                             long src_id,
                             const std::string& talker_alias,
                             const std::string& short_name,
-                            double freq) {
+                            double freq,
+                            bool emergency) {
     // Resolve talker: alias > src_id > empty
     std::string talker = talker_alias;
     if (talker.empty() && src_id > 0) {
@@ -159,11 +162,13 @@ std::string build_metadata(const std::string& fmt,
 
     std::string out = fmt;
     out = substitute(out, "talkgroup_display", strip_ansi(talkgroup_display));
+    out = substitute(out, "talkgroup_tag",     talkgroup_tag);
     out = substitute(out, "talkgroup",         std::to_string(talkgroup));
-    out = substitute(out, "talker_alias",      talker, /*collapse_if_empty=*/true);
+    out = substitute(out, "talker_alias",      talker,                        /*collapse=*/true);
     out = substitute(out, "time",              timebuf);
     out = substitute(out, "short_name",        short_name);
     out = substitute(out, "freq",              freq_ss.str());
+    out = substitute(out, "emergency",         emergency ? "EMERGENCY" : "", /*collapse=*/true);
     return out;
 }
 }  // namespace
@@ -309,12 +314,13 @@ public:
             });
         }
 
-        // Check whether the transmitting unit has changed. If so (or on the
-        // very first chunk, where last_src_id == -1), push a metadata update
-        // to Icecast so listeners' players show the new talker.
+        // Check whether the transmitting unit or emergency state has changed.
+        // Either triggers a metadata update so the player reflects the new info.
         const long src_id = call->get_current_source_id();
-        if (src_id != state->last_src_id) {
+        const bool is_emergency = call->get_emergency();
+        if (src_id != state->last_src_id || is_emergency != state->emergency) {
             state->last_src_id = src_id;
+            state->emergency   = is_emergency;
 
             // Resolve the talker alias: check the system's unit tags (respects
             // the TAG_USER_FIRST / TAG_OTA_FIRST / TAG_USER_ONLY mode set in
@@ -327,9 +333,9 @@ public:
 
             const std::string meta = build_metadata(
                 state->metadata_format,
-                state->talkgroup_display, state->talkgroup,
-                src_id, talker_alias,
-                state->short_name, state->freq);
+                state->talkgroup_display, state->talkgroup_tag,
+                state->talkgroup, src_id, talker_alias,
+                state->short_name, state->freq, state->emergency);
 
             BOOST_LOG_TRIVIAL(debug) << call_hdr(*state)
                 << "Metadata update: \"" << meta << "\"";
@@ -386,6 +392,7 @@ private:
         state->short_name = short_name;
         state->talkgroup = tg;
         state->talkgroup_display = call->get_talkgroup_display();
+        state->talkgroup_tag     = call->get_talkgroup_tag();
         state->freq = call->get_freq();
         registry_.insert(call_num, state);
         BOOST_LOG_TRIVIAL(info) << call_hdr(*state)

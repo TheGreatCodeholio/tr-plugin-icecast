@@ -186,7 +186,7 @@ The title is built from a configurable format string set per mount with `metadat
 TG: {talkgroup_display} ({talkgroup}) {talker_alias} {time}
 ```
 
-Which produces output like:
+`{talkgroup_tag}` is a cleaner alternative to `{talkgroup_display}` — it's the raw alpha tag with no ANSI formatting codes, so no stripping is needed. Both work; `{talkgroup_tag}` is recommended:
 
 ```
 TG: FIRE DISP (21101) E4-Smith 14:32:07
@@ -194,16 +194,31 @@ TG: FIRE DISP (21101) 4194305 14:32:07
 TG: FIRE DISP (21101) 14:32:07
 ```
 
+To show an emergency prefix, include `{emergency}` in the format:
+
+```json
+"metadata_format": "{emergency} TG: {talkgroup_tag} ({talkgroup}) {talker_alias} {time}"
+```
+
+Which produces:
+
+```
+EMERGENCY TG: FIRE DISP (21101) E4-Smith 14:32:07
+TG: FIRE DISP (21101) E4-Smith 14:32:07
+```
+
 Available placeholders:
 
 | Placeholder           | Value                                                                                     |
 | --------------------- | ----------------------------------------------------------------------------------------- |
-| `{talkgroup_display}` | Talkgroup alpha tag / display name                                                        |
+| `{talkgroup_display}` | Talkgroup alpha tag / display name (ANSI codes stripped)                                  |
+| `{talkgroup_tag}`     | Raw alpha tag with no formatting codes — cleaner alternative to `{talkgroup_display}`     |
 | `{talkgroup}`         | Numeric talkgroup ID                                                                      |
 | `{talker_alias}`      | Unit tag if found, numeric src ID if not, collapses with surrounding space if src ID is 0 |
 | `{time}`              | Local time on the TR host — `HH:MM:SS`                                                   |
 | `{short_name}`        | System short name                                                                         |
 | `{freq}`              | Channel frequency in MHz                                                                  |
+| `{emergency}`         | `EMERGENCY` when the call is flagged as an emergency, collapses with surrounding space otherwise |
 
 `{talker_alias}` has smart collapse behaviour: if the transmitting unit has a tag it shows the tag; if not it shows the numeric source ID; if the source ID is 0 or unknown the entire token and one surrounding space are removed so you never see a double-space or a trailing space in the title.
 

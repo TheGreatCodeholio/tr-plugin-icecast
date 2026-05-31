@@ -27,8 +27,10 @@ struct CallState {
     // trunk-recorder's bundled plugins use (short_name / TG / freq).
     std::string short_name;
     long talkgroup = 0;
-    std::string talkgroup_display;
+    std::string talkgroup_display;   // formatted display string (ANSI stripped at use)
+    std::string talkgroup_tag;       // raw alpha tag, no ANSI codes
     double freq = 0.0;
+    bool emergency = false;          // updated each audio_stream callback
 
     // Linear amplitude multiplier copied from the mount's Config at encoder-
     // init time. Applied to the resampled PCM just before LAME encoding.
