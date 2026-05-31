@@ -127,7 +127,12 @@ void IcecastSession::set_metadata(const std::string& title) {
     auto meta_resolver = std::make_shared<tcp::resolver>(ioc_);
     const std::string host = cfg_.host;
     const std::string port_str = std::to_string(cfg_.port);
-    const std::string auth = base64_encode(cfg_.username + ":" + cfg_.password);
+    // Build admin auth before entering the lambda chain — cfg_ is not
+    // accessible inside deeply nested lambdas that don't capture this.
+    const std::string& admin_pw = cfg_.admin_password.empty()
+                                      ? cfg_.password
+                                      : cfg_.admin_password;
+    const std::string auth = base64_encode(cfg_.username + ":" + admin_pw);
     const std::string mountpoint = cfg_.mountpoint;
 
     meta_resolver->async_resolve(host, port_str,
@@ -150,7 +155,7 @@ void IcecastSession::set_metadata(const std::string& title) {
                     auto req = std::make_shared<http::request<http::empty_body>>(
                         http::verb::get, target, 11);
                     req->set(http::field::host, host + ":" + port_str);
-                    req->set(http::field::authorization, "Basic " + base64_encode(cfg_.username + ":" + (cfg_.admin_password.empty() ? cfg_.password : cfg_.admin_password)));
+                    req->set(http::field::authorization, "Basic " + auth);
                     req->set(http::field::user_agent, "tr-plugin-icecast/0.1");
                     req->set(http::field::connection, "close");
 
