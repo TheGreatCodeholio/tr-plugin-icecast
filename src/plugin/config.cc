@@ -35,6 +35,15 @@ bool parse_plugin_config(const nlohmann::json& cfg, PluginConfig& out) {
         return false;
     }
 
+    // Metadata defaults. admin_* fall back to the source credentials, which is
+    // what many Icecast setups accept on /admin/metadata for a mount's own
+    // source. Override with admin_user/admin_password if yours requires it.
+    out.metadata_enabled = cfg.value("metadata", true);
+    out.title_template = cfg.value("title_template", out.title_template);
+    out.idle_title = cfg.value("idle_title", std::string{});
+    out.admin_user = cfg.value("admin_user", out.source_user);
+    out.admin_password = cfg.value("admin_password", out.source_password);
+
     if (!cfg.contains("mounts") || !cfg["mounts"].is_array() || cfg["mounts"].empty()) {
         BOOST_LOG_TRIVIAL(error) << kTag << "config must include a non-empty 'mounts' array";
         return false;
@@ -53,6 +62,14 @@ bool parse_plugin_config(const nlohmann::json& cfg, PluginConfig& out) {
         mc.output_sample_rate = m.value("sample_rate", 22050u);
         mc.bitrate_kbps = m.value("bitrate", 64u);
         mc.channels = m.value("channels", 1);
+
+        // Metadata: inherit globals, allow per-mount override of the template /
+        // idle title. Auth always uses the (global) admin credentials.
+        mc.metadata_enabled = m.value("metadata", out.metadata_enabled);
+        mc.title_template = m.value("title_template", out.title_template);
+        mc.idle_title = m.value("idle_title", out.idle_title);
+        mc.metadata_user = out.admin_user;
+        mc.metadata_password = out.admin_password;
 
         if (mc.mountpoint.empty() || mc.mountpoint.front() != '/') {
             BOOST_LOG_TRIVIAL(error) << kTag

@@ -64,6 +64,19 @@ public:
         uint32_t output_sample_rate = 22050;
         uint32_t bitrate_kbps = 64;
         int channels = 1;
+
+        // "Now playing" metadata (pushed out-of-band to /admin/metadata).
+        bool metadata_enabled = true;
+        // Title template rendered per active call by the plugin. Supports the
+        // tokens ${TALKGROUP} ${TALKGROUP_TAG} ${TAG} ${SYSTEM} ${FREQ} ${TIME}.
+        std::string title_template;
+        // Title pushed when the mount goes idle (no active call). Empty = leave
+        // the previous title untouched.
+        std::string idle_title;
+        // Credentials for the /admin/metadata request. Default to the source
+        // credentials above; override if your Icecast requires admin creds.
+        std::string metadata_user = "source";
+        std::string metadata_password;
     };
 
     // Source for the next MP3 frame to write on the wire. Returns the frame
@@ -87,6 +100,11 @@ public:
     // Install/replace the frame producer. The pacer calls it on every tick.
     // Pass nullptr to fall back to internal silence generator.
     void set_frame_producer(FrameProducer p);
+
+    // Push a "now playing" title to Icecast via a short-lived, out-of-band HTTP
+    // GET to /admin/metadata (does NOT touch the streaming socket). Best-effort:
+    // failures are logged, never fatal. Must be called on the asio thread.
+    void update_metadata(std::string title);
 
     // Request graceful shutdown.
     void close();

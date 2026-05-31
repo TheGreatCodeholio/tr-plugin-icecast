@@ -7,6 +7,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <ctime>
 #include <memory>
 #include <shared_mutex>
 #include <string>
@@ -27,8 +28,10 @@ struct CallState {
     // trunk-recorder's bundled plugins use (short_name / TG / freq).
     std::string short_name;
     long talkgroup = 0;
-    std::string talkgroup_display;
+    std::string talkgroup_display;       // Alpha Tag  -> ${TALKGROUP_TAG}
+    std::string talkgroup_tag;           // service Tag -> ${TAG}
     double freq = 0.0;
+    time_t start_time = 0;               // call start  -> ${TIME}
 
     PcmRingBuffer pcm;
     std::unique_ptr<Resampler> resampler;       // input_rate -> mount output_rate

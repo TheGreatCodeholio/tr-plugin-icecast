@@ -13,6 +13,7 @@ Requires Trunk Recorder 5.0 or later, and the LAME and libsamplerate audio libra
 - [Configure](#configure)
   - [Server connection](#server-connection)
   - [Streams](#streams)
+  - [Now Playing metadata](#now-playing-metadata)
   - [Talkgroup mapping](#talkgroup-mapping)
   - [Trunk Recorder option](#trunk-recorder-option)
   - [Plugin usage](#plugin-usage)
@@ -30,8 +31,8 @@ Requires Trunk Recorder 5.0 or later, and the LAME and libsamplerate audio libra
 sudo apt install libmp3lame-dev libsamplerate0-dev libssl-dev pkg-config
 ```
 
-&emsp; Boost and OpenSSL are already required by Trunk Recorder.
-s
+&emsp; Boost and OpenSSL are already required by Trunk Recorder. On non-Debian distros the package names differ (e.g. Fedora/RHEL `lame-devel libsamplerate-devel openssl-devel`, Arch `lame libsamplerate openssl`); the build's CMake checks will name the right package if one is missing.
+
 3. **Build and install the plugin:**
 
 &emsp; This plugin source should be cloned into the `user_plugins` directory of the Trunk Recorder 5.0+ source tree. It will be built and installed along with Trunk Recorder.
@@ -77,6 +78,38 @@ Each entry in the `mounts` array defines one live stream. Listeners connect to t
 | sample_rate |          | 22050          | int        | Output sample rate in Hz. 22050 is plenty for voice.                                                       |
 | bitrate     |          | 64             | int        | MP3 bitrate in kbps.                                                                                       |
 | channels    |          | 1              | int        | `1` for mono (recommended for radio), `2` for stereo.                                                      |
+| title_template |       | _(global)_     | string     | Per-mount override of the global `title_template` (see [Now Playing metadata](#now-playing-metadata)).     |
+| idle_title  |          | _(global)_     | string     | Per-mount override of the global `idle_title`.                                                             |
+| metadata    |          | _(global)_     | true/false | Per-mount override to disable metadata for just this stream.                                               |
+
+### Now Playing metadata
+
+When a call starts streaming on a mount, the plugin can push a "now playing" title to Icecast so listeners see the talkgroup in their player and on the server's status page. This is sent out-of-band to Icecast's `/admin/metadata` endpoint; it does not affect the audio.
+
+> **Credentials:** Most Icecast servers do **not** accept the source password for metadata updates — you'll get `Mountpoint will not accept URL updates`. Use the server's **admin** credentials (`admin_user` / `admin_password`), or give the mount its own `<username>`/`<password>` in `icecast.xml` and put those here. If `admin_user`/`admin_password` are omitted, the source credentials are used.
+
+These top-level keys control metadata (each `mounts` entry may override `title_template`, `idle_title`, and `metadata`):
+
+| Key            | Required | Default Value                                      | Type       | Description                                                                                          |
+| -------------- | :------: | -------------------------------------------------- | ---------- | ---------------------------------------------------------------------------------------------------- |
+| metadata       |          | true                                               | true/false | Master switch for "now playing" updates.                                                             |
+| title_template |          | `TG: ${TALKGROUP_TAG} (${TALKGROUP}) ${TAG} ${TIME}` | string   | Template for the title. Supports the tokens below.                                                  |
+| idle_title     |          | _(empty)_                                          | string     | Title set when a mount goes quiet (no active call). Empty leaves the previous title untouched.       |
+| admin_user     |          | same as `source_user`                              | string     | Username for `/admin/metadata` updates.                                                              |
+| admin_password |          | same as `source_password`                          | string     | Password for `/admin/metadata` updates.                                                              |
+
+**Template tokens** (case-insensitive; unknown tokens render empty, and surrounding whitespace is collapsed):
+
+| Token              | Value                                                        |
+| ------------------ | ------------------------------------------------------------ |
+| `${TALKGROUP}`     | Talkgroup / channel number.                                  |
+| `${TALKGROUP_TAG}` | Alpha Tag from the talkgroup file.                           |
+| `${TAG}`           | The `Tag` column from the talkgroup file.                    |
+| `${SYSTEM}`        | System short name.                                           |
+| `${FREQ}`          | Call frequency in MHz (e.g. `154.2650`).                     |
+| `${TIME}`          | Call start time, local, `HH:MM:SS`.                          |
+
+Example: `TG: ${TALKGROUP_TAG} (${TALKGROUP}) ${TAG} ${TIME}` → `TG: BC FD1/2Disp (1) Fire Dispatch 14:32:07`.
 
 ### Talkgroup mapping
 
@@ -110,6 +143,11 @@ Talkgroups not listed here are simply ignored — they are recorded by Trunk Rec
       "port": 8000,
       "source_user": "source",
       "source_password": "REPLACE_ME",
+
+      "metadata": true,
+      "title_template": "TG: ${TALKGROUP_TAG} (${TALKGROUP}) ${TAG} ${TIME}",
+      "admin_user": "admin",
+      "admin_password": "REPLACE_ME",
 
       "mounts": [
         {
@@ -187,3 +225,15 @@ A few things must line up between this plugin's config and the Icecast server's 
 - Make sure `<limits>` allows enough `<sources>` for the number of mounts you configure.
 
 No special tuning is required — Icecast accepts MP3 source clients out of the box. Mountpoints are created automatically when the plugin connects, so they do not need to be pre-declared in `icecast.xml`.
+
+If you use the [Now Playing metadata](#now-playing-metadata) feature, note that Icecast authorizes `/admin/metadata` updates with the **admin** account or a **per-mount** account — not the global source password. Set the plugin's `admin_user`/`admin_password` to your `<admin-user>`/`<admin-password>`, or declare a `<mount>` with its own credentials:
+
+```xml
+<mount type="normal">
+    <mount-name>/dispatch.mp3</mount-name>
+    <username>dispatch</username>
+    <password>somethingsecret</password>
+</mount>
+```
+
+then point both the source and `admin_*` credentials at that mount account. (Setting a mount password also makes that the password required to *stream* to the mount.)

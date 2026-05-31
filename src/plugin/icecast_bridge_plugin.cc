@@ -17,9 +17,13 @@
 #include <boost/shared_ptr.hpp>
 
 #include <atomic>
+#include <cctype>
 #include <chrono>
+#include <cstdio>
+#include <ctime>
 #include <deque>
 #include <memory>
+#include <string>
 #include <thread>
 #include <unordered_map>
 
@@ -45,6 +49,68 @@ constexpr int kGhostCleanupSeconds = 10;
 inline std::string call_hdr(const CallState& cs) {
     return log_header(cs.short_name, cs.call_num, cs.talkgroup_display, cs.freq) +
            "Icecast Bridge - ";
+}
+
+// Render a mount's title_template against a call's cached fields. Substitutes
+// ${TOKEN} (case-insensitive); unknown tokens become empty. Collapses the runs
+// of whitespace that empty tokens leave behind so titles stay tidy.
+inline std::string render_title(const IcecastSession::Config& mc,
+                                const CallState& cs) {
+    char time_buf[16] = {0};
+    if (cs.start_time) {
+        std::tm tm{};
+        time_t st = cs.start_time;
+        localtime_r(&st, &tm);
+        std::strftime(time_buf, sizeof(time_buf), "%H:%M:%S", &tm);
+    }
+    char freq_buf[32];
+    std::snprintf(freq_buf, sizeof(freq_buf), "%.4f", cs.freq / 1e6);
+
+    const std::unordered_map<std::string, std::string> vals = {
+        {"TALKGROUP", std::to_string(cs.talkgroup)},
+        {"TALKGROUP_TAG", cs.talkgroup_display},
+        {"TAG", cs.talkgroup_tag},
+        {"SYSTEM", cs.short_name},
+        {"FREQ", freq_buf},
+        {"TIME", time_buf},
+    };
+
+    const std::string& s = mc.title_template;
+    std::string out;
+    out.reserve(s.size() + 16);
+    for (size_t i = 0; i < s.size();) {
+        if (s[i] == '$' && i + 1 < s.size() && s[i + 1] == '{') {
+            size_t end = s.find('}', i + 2);
+            if (end != std::string::npos) {
+                std::string key = s.substr(i + 2, end - (i + 2));
+                for (char& c : key) c = static_cast<char>(std::toupper(
+                    static_cast<unsigned char>(c)));
+                auto it = vals.find(key);
+                if (it != vals.end()) out += it->second;  // unknown -> empty
+                i = end + 1;
+                continue;
+            }
+        }
+        out.push_back(s[i++]);
+    }
+
+    // Collapse whitespace runs and trim, so an empty ${TAG}/${TIME} doesn't
+    // leave "(123)  14:00" style gaps.
+    std::string tidy;
+    tidy.reserve(out.size());
+    bool prev_space = false;
+    for (char c : out) {
+        bool is_space = std::isspace(static_cast<unsigned char>(c));
+        if (is_space) {
+            if (!prev_space && !tidy.empty()) tidy.push_back(' ');
+            prev_space = true;
+        } else {
+            tidy.push_back(c);
+            prev_space = false;
+        }
+    }
+    while (!tidy.empty() && tidy.back() == ' ') tidy.pop_back();
+    return tidy;
 }
 }  // namespace
 
@@ -228,7 +294,9 @@ private:
         state->short_name = short_name;
         state->talkgroup = tg;
         state->talkgroup_display = call->get_talkgroup_display();
+        state->talkgroup_tag = call->get_talkgroup_tag();
         state->freq = call->get_freq();
+        state->start_time = call->get_start_time();
         registry_.insert(call_num, state);
         BOOST_LOG_TRIVIAL(info) << call_hdr(*state)
             << "Routing to mount '" << state->mountpoint << "'";
@@ -306,6 +374,12 @@ private:
 
         BOOST_LOG_TRIVIAL(info) << call_hdr(*state)
             << "Now active on mount '" << state->mountpoint << "'";
+
+        // Push "now playing" metadata for the freshly-promoted call.
+        if (const auto* mc = cfg_.find_mount(state->mountpoint);
+            mc && mc->metadata_enabled && !mc->title_template.empty()) {
+            session->update_metadata(render_title(*mc, *state));
+        }
     }
 
     // Called by the session's pacer (asio thread) once per MP3 frame interval.
@@ -398,7 +472,14 @@ private:
         if (q.empty()) {
             mount_queue_.erase(qit);
             // Detach producer; session reverts to silence-only.
-            if (cs->session) cs->session->set_frame_producer(nullptr);
+            if (cs->session) {
+                cs->session->set_frame_producer(nullptr);
+                // Mount is idle — reset the "now playing" title if configured.
+                if (const auto* mc = cfg_.find_mount(cs->mountpoint);
+                    mc && mc->metadata_enabled && !mc->idle_title.empty()) {
+                    cs->session->update_metadata(mc->idle_title);
+                }
+            }
             return;
         }
         auto next = q.front();

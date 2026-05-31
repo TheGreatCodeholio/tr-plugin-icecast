@@ -25,6 +25,15 @@ struct PluginConfig {
     std::string source_user = "source";
     std::string source_password;
 
+    // "Now playing" metadata defaults (per-mount entries may override the
+    // template / idle title). admin_* default to the source credentials.
+    bool metadata_enabled = true;
+    std::string title_template =
+        "TG: ${TALKGROUP_TAG} (${TALKGROUP}) ${TAG} ${TIME}";
+    std::string idle_title;
+    std::string admin_user;
+    std::string admin_password;
+
     // Per-mountpoint stream definitions (advertised to icecast on connect).
     // The key in mounts_by_name is the mountpoint string (e.g. "/dispatch.mp3").
     std::unordered_map<std::string, IcecastSession::Config> mounts_by_name;

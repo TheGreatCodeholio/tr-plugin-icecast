@@ -8,6 +8,13 @@
   "source_user": "source",
   "source_password": "REPLACE_ME",
 
+  "_comment_metadata": "Pushes a 'now playing' title to Icecast when each call starts. Most Icecast servers require ADMIN (or per-mount) credentials for metadata updates, not the source password — set admin_user/admin_password if so.",
+  "metadata": true,
+  "title_template": "TG: ${TALKGROUP_TAG} (${TALKGROUP}) ${TAG} ${TIME}",
+  "idle_title": "",
+  "admin_user": "admin",
+  "admin_password": "REPLACE_ME",
+
   "mounts": [
     {
       "mount": "/dispatch.mp3",
@@ -17,7 +24,10 @@
       "public": false,
       "sample_rate": 22050,
       "bitrate": 64,
-      "channels": 1
+      "channels": 1,
+      "_comment_override": "title_template / idle_title / metadata may be overridden per mount.",
+      "title_template": "${TALKGROUP_TAG} — ${SYSTEM} ${TIME}",
+      "idle_title": "Dispatch — standby"
     },
     {
       "mount": "/ops.mp3",

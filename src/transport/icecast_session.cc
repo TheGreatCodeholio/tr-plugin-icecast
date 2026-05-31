@@ -8,6 +8,8 @@
 #include <boost/log/trivial.hpp>
 
 #include <algorithm>
+#include <cctype>
+#include <memory>
 
 namespace icecast_bridge {
 
@@ -35,6 +37,130 @@ std::string base64_encode(const std::string& in) {
     while (out.size() % 4) out.push_back('=');
     return out;
 }
+
+// Percent-encode a query-string value (RFC 3986 unreserved set stays literal).
+std::string url_encode(const std::string& in) {
+    static const char hex[] = "0123456789ABCDEF";
+    std::string out;
+    out.reserve(in.size() * 3);
+    for (unsigned char c : in) {
+        if (std::isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
+            out.push_back(static_cast<char>(c));
+        } else {
+            out.push_back('%');
+            out.push_back(hex[c >> 4]);
+            out.push_back(hex[c & 0x0F]);
+        }
+    }
+    return out;
+}
+
+// Self-contained, fire-and-forget HTTP GET to Icecast's /admin/metadata. Owns
+// its own socket so it never interferes with the persistent streaming socket,
+// and keeps itself alive via shared_from_this across the async chain. Best-
+// effort: any error is logged at debug and dropped (the update already reached
+// the server by the time we read the response, so a read failure is harmless).
+class MetadataPush : public std::enable_shared_from_this<MetadataPush> {
+public:
+    MetadataPush(asio::io_context& ioc, std::string host, uint16_t port,
+                 std::string target, std::string auth, std::string mount)
+        : resolver_(ioc), socket_(ioc), host_(std::move(host)), port_(port),
+          target_(std::move(target)), auth_(std::move(auth)),
+          mount_(std::move(mount)) {}
+
+    void run() {
+        auto self = shared_from_this();
+        resolver_.async_resolve(host_, std::to_string(port_),
+            [self](beast::error_code ec, tcp::resolver::results_type r) {
+                if (ec) { self->done("meta_resolve", ec); return; }
+                asio::async_connect(self->socket_, r,
+                    [self](beast::error_code ec2, const tcp::endpoint&) {
+                        if (ec2) { self->done("meta_connect", ec2); return; }
+                        self->send();
+                    });
+            });
+    }
+
+private:
+    void send() {
+        namespace http = beast::http;
+        req_.version(11);
+        req_.method(http::verb::get);
+        req_.target(target_);
+        req_.set(http::field::host, host_ + ":" + std::to_string(port_));
+        req_.set(http::field::user_agent, "tr-plugin-icecast/0.1");
+        req_.set(http::field::authorization, auth_);
+        req_.set(http::field::connection, "close");
+        auto self = shared_from_this();
+        http::async_write(socket_, req_,
+            [self](beast::error_code ec, std::size_t) {
+                if (ec) { self->done("meta_write", ec); return; }
+                http::async_read(self->socket_, self->buf_, self->resp_,
+                    [self](beast::error_code ec2, std::size_t) {
+                        self->on_response(ec2);
+                    });
+            });
+    }
+
+    void on_response(beast::error_code ec) {
+        // end_of_stream/eof is expected with Connection: close once the body is
+        // read; treat it as success if we parsed a status line.
+        const unsigned status = resp_.result_int();
+        if (status == 0) { done("meta_read", ec); return; }
+
+        // Icecast returns HTTP 200 even when it refuses the update; the real
+        // outcome is the <message> in the iceresponse body, e.g.
+        // "Metadata update successful" vs "Mountpoint will not accept URL
+        // updates" (the latter means this mount needs ADMIN credentials).
+        const std::string msg = extract_message(resp_.body());
+        std::string lower = msg;
+        for (char& c : lower) c = static_cast<char>(std::tolower(
+            static_cast<unsigned char>(c)));
+        const bool succeeded =
+            status < 400 && lower.find("success") != std::string::npos;
+
+        if (succeeded) {
+            BOOST_LOG_TRIVIAL(debug) << "[Icecast Bridge] " << mount_
+                << " metadata updated: " << msg;
+        } else {
+            BOOST_LOG_TRIVIAL(warning) << "[Icecast Bridge] " << mount_
+                << " metadata update rejected (HTTP " << status << "): "
+                << (msg.empty() ? "no message" : msg)
+                << " - check admin_user/admin_password";
+        }
+        beast::error_code ignore;
+        socket_.shutdown(tcp::socket::shutdown_both, ignore);
+    }
+
+    // Pull the text between <message>...</message> from an iceresponse body.
+    static std::string extract_message(const std::string& body) {
+        const std::string open = "<message>", close = "</message>";
+        auto a = body.find(open);
+        if (a == std::string::npos) return {};
+        a += open.size();
+        auto b = body.find(close, a);
+        if (b == std::string::npos) return {};
+        return body.substr(a, b - a);
+    }
+
+    void done(const char* where, beast::error_code ec) {
+        BOOST_LOG_TRIVIAL(debug) << "[Icecast Bridge] " << mount_
+            << " metadata " << where << ": " << ec.message();
+        beast::error_code ignore;
+        socket_.shutdown(tcp::socket::shutdown_both, ignore);
+    }
+
+    tcp::resolver resolver_;
+    tcp::socket socket_;
+    std::string host_;
+    uint16_t port_;
+    std::string target_;
+    std::string auth_;
+    std::string mount_;
+    beast::http::request<beast::http::empty_body> req_;
+    beast::http::response<beast::http::string_body> resp_;
+    beast::flat_buffer buf_;
+};
 }  // namespace
 
 IcecastSession::IcecastSession(asio::io_context& ioc, Config cfg)
@@ -78,6 +204,18 @@ void IcecastSession::start() {
 
 void IcecastSession::set_frame_producer(FrameProducer p) {
     producer_ = std::move(p);
+}
+
+void IcecastSession::update_metadata(std::string title) {
+    if (!cfg_.metadata_enabled) return;
+    // mountpoint is config-controlled (validated to start with '/' and be
+    // simple), so embed it raw; only the free-text title needs encoding.
+    std::string target = "/admin/metadata?mount=" + cfg_.mountpoint +
+                         "&mode=updinfo&charset=UTF-8&song=" + url_encode(title);
+    std::string auth = "Basic " + base64_encode(
+        cfg_.metadata_user + ":" + cfg_.metadata_password);
+    std::make_shared<MetadataPush>(ioc_, cfg_.host, cfg_.port, std::move(target),
+                                   std::move(auth), cfg_.mountpoint)->run();
 }
 
 void IcecastSession::close() {
