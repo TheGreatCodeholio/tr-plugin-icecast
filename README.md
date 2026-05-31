@@ -132,7 +132,7 @@ Talkgroups not listed here are simply ignored — they are recorded by Trunk Rec
           "gain": 1.0,
           "admin_user": "admin",
           "admin_password": "REPLACE_ME",
-          "metadata_format": "TG: {talkgroup_display} ({talkgroup}) {talker_alias} {time}",
+          "metadata_format": "TG: {talkgroup_tag} ({talkgroup}) {talker_alias} {time}",
           "metadata_standby": "Standby"
         },
         {
@@ -183,7 +183,7 @@ The plugin pushes ICY `StreamTitle` updates to Icecast via its admin metadata en
 The title is built from a configurable format string set per mount with `metadata_format`. The default is:
 
 ```
-TG: {talkgroup_display} ({talkgroup}) {talker_alias} {time}
+TG: {talkgroup_tag} ({talkgroup}) {talker_alias} {time}
 ```
 
 `{talkgroup_tag}` is a cleaner alternative to `{talkgroup_display}` — it's the raw alpha tag with no ANSI formatting codes, so no stripping is needed. Both work; `{talkgroup_tag}` is recommended:
