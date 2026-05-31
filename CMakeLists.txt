@@ -14,8 +14,12 @@ find_package(PkgConfig REQUIRED)
 
 # libmp3lame ships a .pc on most distros; libsamplerate definitely does.
 pkg_check_modules(SAMPLERATE REQUIRED IMPORTED_TARGET samplerate)
-# lame doesn't always ship pkg-config metadata; fall back to a manual search.
-pkg_check_modules(MP3LAME IMPORTED_TARGET mp3lame)
+# lame's pkg-config module is named 'lame' on Debian/Ubuntu (lame.pc) and
+# 'mp3lame' on some other distros; try both, then fall back to a manual search.
+pkg_check_modules(MP3LAME IMPORTED_TARGET lame)
+if(NOT MP3LAME_FOUND)
+    pkg_check_modules(MP3LAME IMPORTED_TARGET mp3lame)
+endif()
 if(NOT MP3LAME_FOUND)
     find_path(MP3LAME_INCLUDE_DIR lame/lame.h)
     find_library(MP3LAME_LIBRARY mp3lame)
