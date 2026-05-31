@@ -70,19 +70,21 @@ The config also needs a `mounts` array and a `systems` array, described below.
 
 Each entry in the `mounts` array defines one live stream. Listeners connect to these.
 
-| Key              | Required | Default Value | Type       | Description                                                                                                  |
-| ---------------- | :------: | ------------- | ---------- | ------------------------------------------------------------------------------------------------------------ |
-| mount            |    ✓     |               | string     | The stream's path on the server. Must start with `/` (e.g. `/dispatch.mp3`). This becomes the listener URL. |
-| name             |          | same as mount | string     | Friendly stream name shown in players and the Icecast directory.                                             |
-| description      |          |               | string     | Longer description shown in the Icecast directory.                                                           |
-| genre            |          | Public Safety | string     | Genre tag shown in the Icecast directory.                                                                    |
-| public           |          | false         | true/false | List the stream in Icecast's public directory.                                                               |
-| sample_rate      |          | 22050         | int        | Output sample rate in Hz. 22050 is plenty for voice.                                                         |
-| bitrate          |          | 64            | int        | MP3 bitrate in kbps.                                                                                         |
-| channels         |          | 1             | int        | `1` for mono (recommended for radio), `2` for stereo.                                                        |
-| gain             |          | 1.0           | float      | Linear amplitude multiplier applied before MP3 encoding. `1.0` = unity. `2.0` ≈ +6 dB. `0.5` ≈ -6 dB. Samples are clamped to prevent clipping. |
-| admin_user       |          | admin         | string     | Icecast admin username used to push stream metadata updates. Must match `<admin-user>` in `icecast.xml`.     |
-| admin_password   |          | source_password | string   | Icecast admin password used to push stream metadata updates. Defaults to `source_password` if not set. Must match `<admin-password>` in `icecast.xml`. |
+| Key                | Required | Default Value | Type       | Description                                                                                                  |
+| ------------------ | :------: | ------------- | ---------- | ------------------------------------------------------------------------------------------------------------ |
+| mount              |    ✓     |               | string     | The stream's path on the server. Must start with `/` (e.g. `/dispatch.mp3`). This becomes the listener URL. |
+| name               |          | same as mount | string     | Friendly stream name shown in players and the Icecast directory.                                             |
+| description        |          |               | string     | Longer description shown in the Icecast directory.                                                           |
+| genre              |          | Public Safety | string     | Genre tag shown in the Icecast directory.                                                                    |
+| public             |          | false         | true/false | List the stream in Icecast's public directory.                                                               |
+| sample_rate        |          | 22050         | int        | Output sample rate in Hz. 22050 is plenty for voice.                                                         |
+| bitrate            |          | 64            | int        | MP3 bitrate in kbps.                                                                                         |
+| channels           |          | 1             | int        | `1` for mono (recommended for radio), `2` for stereo.                                                        |
+| gain               |          | 1.0           | float      | Linear amplitude multiplier applied before MP3 encoding. `1.0` = unity. `2.0` ≈ +6 dB. `0.5` ≈ -6 dB. Samples are clamped to prevent clipping. |
+| admin_user         |          | admin         | string     | Icecast admin username used to push stream metadata updates. Must match `<admin-user>` in `icecast.xml`.     |
+| admin_password     |          | source_password | string   | Icecast admin password for metadata updates. Defaults to `source_password` if not set. Must match `<admin-password>` in `icecast.xml`. |
+| metadata_format    |          | see below     | string     | Format string for the ICY StreamTitle shown in players. Supports placeholders — see [Stream Metadata](#stream-metadata). |
+| metadata_standby   |          | Standby       | string     | Stream title shown when no call is active on this mount.                                                     |
 
 ### Talkgroup mapping
 
@@ -129,7 +131,9 @@ Talkgroups not listed here are simply ignored — they are recorded by Trunk Rec
           "channels": 1,
           "gain": 1.0,
           "admin_user": "admin",
-          "admin_password": "REPLACE_ME"
+          "admin_password": "REPLACE_ME",
+          "metadata_format": "TG: {talkgroup_display} ({talkgroup}) {talker_alias} {time}",
+          "metadata_standby": "Standby"
         },
         {
           "mount": "/ops.mp3",
@@ -174,27 +178,46 @@ If the plugin cannot be found, or it is being run from a different location, it 
 
 The plugin pushes ICY `StreamTitle` updates to Icecast via its admin metadata endpoint whenever a new call becomes active or the transmitting unit changes mid-call. Players that support ICY metadata (Winamp, VLC, most browser-based players) will display this in real time.
 
-The metadata format is:
+### Format string
+
+The title is built from a configurable format string set per mount with `metadata_format`. The default is:
 
 ```
-TG: <talkgroup_display> (<talkgroup_id>) <talker_alias> <HH:MM:SS>
+TG: {talkgroup_display} ({talkgroup}) {talker_alias} {time}
 ```
 
-For example:
+Which produces output like:
+
 ```
 TG: FIRE DISP (21101) E4-Smith 14:32:07
+TG: FIRE DISP (21101) 4194305 14:32:07
 TG: FIRE DISP (21101) 14:32:07
 ```
 
-The talker alias is included when Trunk Recorder has a unit tags file configured for the system and the transmitting unit's ID is found in it. If no alias is found the field is omitted. The timestamp is local wall-clock time on the machine running Trunk Recorder. When no call is active the stream title is set to `Standby`.
+Available placeholders:
 
-Metadata updates require the Icecast admin endpoint to be reachable using the `admin_user` and `admin_password` configured on each mount. A metadata failure never affects the audio stream itself.
+| Placeholder           | Value                                                                                     |
+| --------------------- | ----------------------------------------------------------------------------------------- |
+| `{talkgroup_display}` | Talkgroup alpha tag / display name                                                        |
+| `{talkgroup}`         | Numeric talkgroup ID                                                                      |
+| `{talker_alias}`      | Unit tag if found, numeric src ID if not, collapses with surrounding space if src ID is 0 |
+| `{time}`              | Local time on the TR host — `HH:MM:SS`                                                   |
+| `{short_name}`        | System short name                                                                         |
+| `{freq}`              | Channel frequency in MHz                                                                  |
+
+`{talker_alias}` has smart collapse behaviour: if the transmitting unit has a tag it shows the tag; if not it shows the numeric source ID; if the source ID is 0 or unknown the entire token and one surrounding space are removed so you never see a double-space or a trailing space in the title.
+
+When no call is active the stream title is set to the value of `metadata_standby` (default: `"Standby"`).
 
 ### Talker alias requirements
 
 - Set `unitTagsFile` in the relevant system block of Trunk Recorder's `config.json` pointing at a CSV of unit IDs and aliases.
 - Or use over-the-air (OTA) aliases if your P25 system broadcasts them — set `unitTagsMode` to `"ota"` or `"user_first"`.
-- If neither is configured the talker alias field will always be empty, but the rest of the metadata (talkgroup, ID, time) will still update correctly.
+- If neither is configured `{talker_alias}` will fall back to the numeric source ID, or collapse entirely if the source ID is unavailable.
+
+### Admin credentials
+
+Metadata updates use the Icecast admin endpoint and require the `admin_user` and `admin_password` configured on each mount. A metadata failure is logged and ignored — it never affects the audio stream itself.
 
 ## Listening
 
