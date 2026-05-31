@@ -16,10 +16,14 @@
 #include <boost/log/trivial.hpp>
 #include <boost/shared_ptr.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <ctime>
 #include <deque>
+#include <iomanip>
 #include <memory>
+#include <sstream>
 #include <thread>
 #include <unordered_map>
 
@@ -45,6 +49,51 @@ constexpr int kGhostCleanupSeconds = 10;
 inline std::string call_hdr(const CallState& cs) {
     return log_header(cs.short_name, cs.call_num, cs.talkgroup_display, cs.freq) +
            "Icecast Bridge - ";
+}
+
+// Apply a linear gain to a block of int16 PCM samples in-place.
+// Samples are clamped to [-32768, 32767] to prevent integer overflow.
+// This is a no-op when gain == 1.0f so there is no performance cost for
+// mounts that leave gain at its default.
+inline void apply_gain(int16_t* samples, int count, float gain) {
+    if (gain == 1.0f) return;
+    for (int i = 0; i < count; ++i) {
+        float s = static_cast<float>(samples[i]) * gain;
+        s = std::clamp(s, -32768.0f, 32767.0f);
+        samples[i] = static_cast<int16_t>(s);
+    }
+}
+
+// Build the ICY StreamTitle string shown in listeners' players.
+// Format: "TG: <talkgroup_display> (<talkgroup>) <talker_alias> <HH:MM:SS>"
+//
+// talker_alias is omitted (no trailing space) when empty — e.g. when the
+// system has no unit tags file configured or the source ID isn't tagged.
+//
+// The timestamp is local wall-clock time so dispatchers and listeners share
+// a common reference without needing to know the server timezone.
+std::string build_metadata(const std::string& talkgroup_display,
+                            long talkgroup,
+                            const std::string& talker_alias) {
+    // Local time
+    std::time_t now = std::time(nullptr);
+    std::tm tm_local{};
+#ifdef _WIN32
+    localtime_s(&tm_local, &now);
+#else
+    localtime_r(&now, &tm_local);
+#endif
+    char timebuf[9];  // "HH:MM:SS\0"
+    std::strftime(timebuf, sizeof(timebuf), "%H:%M:%S", &tm_local);
+
+    std::ostringstream oss;
+    oss << "TG: " << talkgroup_display
+        << " (" << talkgroup << ")";
+    if (!talker_alias.empty()) {
+        oss << " " << talker_alias;
+    }
+    oss << " " << timebuf;
+    return oss.str();
 }
 }  // namespace
 
@@ -175,6 +224,7 @@ public:
                 state->encoder = std::make_unique<Mp3FrameEncoder>(
                     mount_cfg->output_sample_rate, mount_cfg->bitrate_kbps,
                     mount_cfg->channels);
+                state->gain = mount_cfg->gain;
             } catch (const std::exception& e) {
                 BOOST_LOG_TRIVIAL(error) << call_hdr(*state)
                     << "Encoder init failed: " << e.what();
@@ -185,6 +235,38 @@ public:
                 enqueue_for_streaming(self_state);
             });
         }
+
+        // Check whether the transmitting unit has changed. If so (or on the
+        // very first chunk, where last_src_id == -1), push a metadata update
+        // to Icecast so listeners' players show the new talker.
+        const long src_id = call->get_current_source_id();
+        if (src_id != state->last_src_id) {
+            state->last_src_id = src_id;
+
+            // Resolve the talker alias: check the system's unit tags (respects
+            // the TAG_USER_FIRST / TAG_OTA_FIRST / TAG_USER_ONLY mode set in
+            // the system config). Returns "" when no tag is found.
+            std::string talker_alias;
+            System* sys = call->get_system();
+            if (sys && src_id > 0) {
+                talker_alias = sys->find_unit_tag(src_id);
+            }
+
+            const std::string meta = build_metadata(
+                state->talkgroup_display, state->talkgroup, talker_alias);
+
+            BOOST_LOG_TRIVIAL(debug) << call_hdr(*state)
+                << "Metadata update: \"" << meta << "\"";
+
+            // Push the metadata update on the asio thread so set_metadata's
+            // async chain runs on the io_context that owns the session.
+            auto self_state = state;
+            boost::asio::post(ioc_, [this, self_state, meta] {
+                auto session = pool_ ? pool_->get(self_state->mountpoint) : nullptr;
+                if (session) session->set_metadata(meta);
+            });
+        }
+
         state->pcm.push(samples, sampleCount);
         return 0;
     }
@@ -375,6 +457,10 @@ private:
         }
 
         try {
+            // Apply per-mount gain to the PCM frame before encoding.
+            // apply_gain() is a no-op when gain == 1.0f (the default).
+            apply_gain(cs->out_pcm.data(), kOut, cs->gain);
+
             auto bytes = cs->encoder->encode(cs->out_pcm.data(), kOut);
             cs->out_pcm.erase(cs->out_pcm.begin(), cs->out_pcm.begin() + kOut);
             cs->mp3_frame_id++;
@@ -395,12 +481,16 @@ private:
         if (qit == mount_queue_.end()) return;
         auto& q = qit->second;
         if (!q.empty() && q.front()->call_num == cs->call_num) q.pop_front();
+
         if (q.empty()) {
             mount_queue_.erase(qit);
             // Detach producer; session reverts to silence-only.
             if (cs->session) cs->session->set_frame_producer(nullptr);
+            // Reset metadata to standby so listeners know the channel is idle.
+            if (cs->session) cs->session->set_metadata("Standby");
             return;
         }
+
         auto next = q.front();
         BOOST_LOG_TRIVIAL(info) << call_hdr(*next)
             << "Promoted from queue on '" << cs->mountpoint

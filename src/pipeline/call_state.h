@@ -30,6 +30,19 @@ struct CallState {
     std::string talkgroup_display;
     double freq = 0.0;
 
+    // Linear amplitude multiplier copied from the mount's Config at encoder-
+    // init time. Applied to the resampled PCM just before LAME encoding.
+    // 1.0 = unity. Values > 1.0 boost (will clip if source is near full scale).
+    // Values < 1.0 attenuate. Samples are clamped to int16 range after scaling.
+    float gain = 1.0f;
+
+    // Talker alias tracking. last_src_id holds the source/unit ID of the most
+    // recently seen transmitter on this call. Compared in audio_stream against
+    // the current call->get_current_source_id() so metadata updates are only
+    // pushed to Icecast when the talker actually changes, not on every callback.
+    // -1 means "not yet set" (forces a metadata push on the first audio chunk).
+    long last_src_id = -1;
+
     PcmRingBuffer pcm;
     std::unique_ptr<Resampler> resampler;       // input_rate -> mount output_rate
     std::unique_ptr<Mp3FrameEncoder> encoder;   // per-call so its bit reservoir
