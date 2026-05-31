@@ -84,17 +84,65 @@ std::string strip_ansi(const std::string& in) {
     return out;
 }
 
-// Build the ICY StreamTitle string shown in listeners' players.
-// Format: "TG: <talkgroup_display> (<talkgroup>) <talker_alias> <HH:MM:SS>"
+// Substitute a single {token} in `fmt` with `value`. When `value` is empty
+// and `collapse_if_empty` is true, also eats one space immediately before or
+// after the token so the caller doesn't end up with a double-space.
+std::string substitute(const std::string& fmt,
+                        const std::string& token,
+                        const std::string& value,
+                        bool collapse_if_empty = false) {
+    const std::string placeholder = "{" + token + "}";
+    std::string out;
+    out.reserve(fmt.size() + value.size());
+    size_t pos = 0;
+    while (pos < fmt.size()) {
+        size_t found = fmt.find(placeholder, pos);
+        if (found == std::string::npos) {
+            out.append(fmt, pos, std::string::npos);
+            break;
+        }
+        out.append(fmt, pos, found - pos);
+        if (value.empty() && collapse_if_empty) {
+            // Remove one adjacent space: prefer the space before the token,
+            // fall back to the space after.
+            if (!out.empty() && out.back() == ' ') {
+                out.pop_back();
+            } else if (found + placeholder.size() < fmt.size() &&
+                       fmt[found + placeholder.size()] == ' ') {
+                pos = found + placeholder.size() + 1;
+                continue;
+            }
+        } else {
+            out.append(value);
+        }
+        pos = found + placeholder.size();
+    }
+    return out;
+}
+
+// Build the ICY StreamTitle string from a format template.
 //
-// talker_alias is omitted (no trailing space) when empty — e.g. when the
-// system has no unit tags file configured or the source ID isn't tagged.
-//
-// The timestamp is local wall-clock time so dispatchers and listeners share
-// a common reference without needing to know the server timezone.
-std::string build_metadata(const std::string& talkgroup_display,
+// Supported placeholders:
+//   {talkgroup_display} - alpha tag / display name (ANSI codes stripped)
+//   {talkgroup}         - numeric TGID
+//   {talker_alias}      - unit tag if found, else src_id if > 0, else ""
+//                         (collapses surrounding space when empty)
+//   {time}              - local HH:MM:SS
+//   {short_name}        - system short name
+//   {freq}              - frequency in MHz (6 decimal places)
+std::string build_metadata(const std::string& fmt,
+                            const std::string& talkgroup_display,
                             long talkgroup,
-                            const std::string& talker_alias) {
+                            long src_id,
+                            const std::string& talker_alias,
+                            const std::string& short_name,
+                            double freq) {
+    // Resolve talker: alias > src_id > empty
+    std::string talker = talker_alias;
+    if (talker.empty() && src_id > 0) {
+        talker = std::to_string(src_id);
+    }
+
     // Local time
     std::time_t now = std::time(nullptr);
     std::tm tm_local{};
@@ -103,17 +151,20 @@ std::string build_metadata(const std::string& talkgroup_display,
 #else
     localtime_r(&now, &tm_local);
 #endif
-    char timebuf[9];  // "HH:MM:SS\0"
+    char timebuf[9];
     std::strftime(timebuf, sizeof(timebuf), "%H:%M:%S", &tm_local);
 
-    std::ostringstream oss;
-    oss << "TG: " << strip_ansi(talkgroup_display)
-        << " (" << talkgroup << ")";
-    if (!talker_alias.empty()) {
-        oss << " " << talker_alias;
-    }
-    oss << " " << timebuf;
-    return oss.str();
+    std::ostringstream freq_ss;
+    freq_ss << std::fixed << std::setprecision(6) << freq;
+
+    std::string out = fmt;
+    out = substitute(out, "talkgroup_display", strip_ansi(talkgroup_display));
+    out = substitute(out, "talkgroup",         std::to_string(talkgroup));
+    out = substitute(out, "talker_alias",      talker, /*collapse_if_empty=*/true);
+    out = substitute(out, "time",              timebuf);
+    out = substitute(out, "short_name",        short_name);
+    out = substitute(out, "freq",              freq_ss.str());
+    return out;
 }
 }  // namespace
 
@@ -245,6 +296,8 @@ public:
                     mount_cfg->output_sample_rate, mount_cfg->bitrate_kbps,
                     mount_cfg->channels);
                 state->gain = mount_cfg->gain;
+                state->metadata_format  = mount_cfg->metadata_format;
+                state->metadata_standby = mount_cfg->metadata_standby;
             } catch (const std::exception& e) {
                 BOOST_LOG_TRIVIAL(error) << call_hdr(*state)
                     << "Encoder init failed: " << e.what();
@@ -273,7 +326,10 @@ public:
             }
 
             const std::string meta = build_metadata(
-                state->talkgroup_display, state->talkgroup, talker_alias);
+                state->metadata_format,
+                state->talkgroup_display, state->talkgroup,
+                src_id, talker_alias,
+                state->short_name, state->freq);
 
             BOOST_LOG_TRIVIAL(debug) << call_hdr(*state)
                 << "Metadata update: \"" << meta << "\"";
@@ -507,7 +563,7 @@ private:
             // Detach producer; session reverts to silence-only.
             if (cs->session) cs->session->set_frame_producer(nullptr);
             // Reset metadata to standby so listeners know the channel is idle.
-            if (cs->session) cs->session->set_metadata("Standby");
+            if (cs->session) cs->session->set_metadata(cs->metadata_standby);
             return;
         }
 

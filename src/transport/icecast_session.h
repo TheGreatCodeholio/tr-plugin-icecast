@@ -45,6 +45,14 @@ public:
         // admin_user defaults to "admin"; admin_password defaults to password.
         std::string admin_user = "admin";
         std::string admin_password;
+        // ICY StreamTitle format string. Supported placeholders:
+        //   {talkgroup_display}, {talkgroup}, {talker_alias}, {time},
+        //   {short_name}, {freq}
+        // {talker_alias} resolves to the unit tag if found, the numeric src ID
+        // if not, and collapses with surrounding whitespace if src ID is also 0.
+        std::string metadata_format  = "TG: {talkgroup_display} ({talkgroup}) {talker_alias} {time}";
+        // Stream title pushed when no call is active on this mount.
+        std::string metadata_standby = "Standby";
     };
 
     using FrameProducer = std::function<std::vector<uint8_t>()>;

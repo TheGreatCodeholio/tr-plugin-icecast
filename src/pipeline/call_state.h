@@ -36,6 +36,10 @@ struct CallState {
     // Values < 1.0 attenuate. Samples are clamped to int16 range after scaling.
     float gain = 1.0f;
 
+    // ICY metadata format string and standby title, copied from mount Config.
+    std::string metadata_format;
+    std::string metadata_standby;
+
     // Talker alias tracking. last_src_id holds the source/unit ID of the most
     // recently seen transmitter on this call. Compared in audio_stream against
     // the current call->get_current_source_id() so metadata updates are only

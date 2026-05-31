@@ -56,6 +56,9 @@ bool parse_plugin_config(const nlohmann::json& cfg, PluginConfig& out) {
         mc.gain = m.value("gain", 1.0f);
         mc.admin_user = m.value("admin_user", std::string{"admin"});
         mc.admin_password = m.value("admin_password", std::string{});
+        mc.metadata_format  = m.value("metadata_format",
+            std::string{"TG: {talkgroup_display} ({talkgroup}) {talker_alias} {time}"});
+        mc.metadata_standby = m.value("metadata_standby", std::string{"Standby"});
 
         if (mc.mountpoint.empty() || mc.mountpoint.front() != '/') {
             BOOST_LOG_TRIVIAL(error) << kTag
