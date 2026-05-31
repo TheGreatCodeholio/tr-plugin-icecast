@@ -54,6 +54,7 @@ bool parse_plugin_config(const nlohmann::json& cfg, PluginConfig& out) {
         mc.bitrate_kbps = m.value("bitrate", 64u);
         mc.channels = m.value("channels", 1);
         mc.gain = m.value("gain", 1.0f);
+        mc.admin_user = m.value("admin_user", std::string{"admin"});
         mc.admin_password = m.value("admin_password", std::string{});
 
         if (mc.mountpoint.empty() || mc.mountpoint.front() != '/') {

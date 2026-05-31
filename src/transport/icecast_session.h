@@ -40,9 +40,10 @@ public:
         uint32_t bitrate_kbps = 64;
         int channels = 1;
         float gain = 1.0f;
-        // Admin password for the /admin/metadata endpoint. If empty, falls
-        // back to password. Set this if your icecast.xml has a different
-        // <admin-password> from <source-password>.
+        // Credentials for the /admin/metadata endpoint. Icecast requires the
+        // admin user (default "admin"), not the source user, for this endpoint.
+        // admin_user defaults to "admin"; admin_password defaults to password.
+        std::string admin_user = "admin";
         std::string admin_password;
     };
 

@@ -132,7 +132,7 @@ void IcecastSession::set_metadata(const std::string& title) {
     const std::string& admin_pw = cfg_.admin_password.empty()
                                       ? cfg_.password
                                       : cfg_.admin_password;
-    const std::string auth = base64_encode(cfg_.username + ":" + admin_pw);
+    const std::string auth = base64_encode(cfg_.admin_user + ":" + admin_pw);
     const std::string mountpoint = cfg_.mountpoint;
 
     meta_resolver->async_resolve(host, port_str,
