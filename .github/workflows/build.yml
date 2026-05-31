@@ -1,0 +1,99 @@
+name: build
+
+# Verifies the plugin compiles and links against trunk-recorder.
+# The plugin cannot build standalone (it links trunk_recorder_library), so CI
+# checks out trunk-recorder, drops this plugin into user_plugins/, and builds
+# the plugin target — which pulls in trunk_recorder_library as a dependency.
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch:
+
+# trunk-recorder fork + ref to build against. The plugin tracks this fork's API
+# (e.g. the 1-arg call_end signature); upstream robotastic/trunk-recorder has
+# diverged, so do not point this at upstream without checking the plugin's
+# Plugin_Api overrides first.
+env:
+  TR_REPO: TheGreatCodeholio/trunk-recorder
+  TR_REF: master
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout plugin
+        uses: actions/checkout@v4
+        with:
+          path: tr-plugin-icecast
+
+      - name: Checkout trunk-recorder (${{ env.TR_REPO }}@${{ env.TR_REF }})
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.TR_REPO }}
+          ref: ${{ env.TR_REF }}
+          path: trunk-recorder
+
+      # Mirrors trunk-recorder's own Dockerfile builder stage (ubuntu:24.04),
+      # so the toolchain/GNURadio versions match TR's official CI build, plus
+      # the two extra libs this plugin needs (LAME + libsamplerate).
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y \
+            build-essential ca-certificates cmake curl git \
+            gnuradio-dev gr-osmosdr libosmosdr-dev \
+            libairspy-dev libairspyhf-dev libbladerf-dev libfreesrp-dev \
+            libhackrf-dev libmirisdr-dev librtlsdr-dev libsoapysdr-dev libxtrx-dev \
+            libuhd-dev libusb-dev libusb-1.0-0-dev \
+            libboost-all-dev libcurl4-openssl-dev libgmp-dev liborc-0.4-dev \
+            libpthread-stubs0-dev libsndfile1-dev libssl-dev pkg-config \
+            libmp3lame-dev libsamplerate0-dev
+
+      # Caches compiled objects across runs; trunk_recorder_library is large, so
+      # this turns a ~10 min cold build into a ~2 min warm one.
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ${{ runner.os }}-tr-icecast
+
+      - name: Link plugin into trunk-recorder/user_plugins
+        run: ln -s "$GITHUB_WORKSPACE/tr-plugin-icecast" trunk-recorder/user_plugins/tr-plugin-icecast
+
+      - name: Configure (CMake)
+        working-directory: trunk-recorder
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      # Build only the plugin target — this compiles trunk_recorder_library (its
+      # dependency) but skips the trunk-recorder executable and op25, keeping CI
+      # focused on "does the plugin build against TR".
+      - name: Build plugin
+        working-directory: trunk-recorder
+        run: cmake --build build --target tr_plugin_icecast -j"$(nproc)"
+
+      - name: Verify artifact
+        working-directory: trunk-recorder
+        run: |
+          set -euo pipefail
+          SO=build/libtr_plugin_icecast.so
+          test -f "$SO"
+          # Must export trunk-recorder's plugin entry point.
+          nm -D -C "$SO" | grep -q create_plugin
+          # No unresolved shared-library dependencies.
+          if ldd "$SO" | grep -i 'not found'; then
+            echo "ERROR: unresolved shared libraries" >&2
+            exit 1
+          fi
+          echo "OK: $(file "$SO")"
+
+      - name: Upload plugin artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libtr_plugin_icecast-${{ github.sha }}
+          path: trunk-recorder/build/libtr_plugin_icecast.so
+          if-no-files-found: error
