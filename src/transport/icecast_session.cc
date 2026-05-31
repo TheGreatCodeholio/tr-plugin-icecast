@@ -8,6 +8,8 @@
 #include <boost/log/trivial.hpp>
 
 #include <algorithm>
+#include <memory>
+#include <sstream>
 
 namespace icecast_bridge {
 
@@ -33,6 +35,26 @@ std::string base64_encode(const std::string& in) {
     }
     if (bits > -6) out.push_back(tab[((val << 8) >> (bits + 8)) & 0x3F]);
     while (out.size() % 4) out.push_back('=');
+    return out;
+}
+
+// Percent-encode a string for use in a URL query parameter value.
+// Encodes everything except unreserved characters (RFC 3986).
+std::string url_encode(const std::string& in) {
+    static const char hex[] = "0123456789ABCDEF";
+    std::string out;
+    out.reserve(in.size() * 3);
+    for (unsigned char c : in) {
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+            (c >= '0' && c <= '9') ||
+            c == '-' || c == '_' || c == '.' || c == '~') {
+            out.push_back(static_cast<char>(c));
+        } else {
+            out.push_back('%');
+            out.push_back(hex[c >> 4]);
+            out.push_back(hex[c & 0xF]);
+        }
+    }
     return out;
 }
 }  // namespace
@@ -78,6 +100,88 @@ void IcecastSession::start() {
 
 void IcecastSession::set_frame_producer(FrameProducer p) {
     producer_ = std::move(p);
+}
+
+void IcecastSession::set_metadata(const std::string& title) {
+    // Out-of-band metadata update via Icecast's admin endpoint.
+    // Opens a short-lived TCP connection, sends one HTTP GET, reads the
+    // response header, then closes. Errors are logged and swallowed — a
+    // metadata failure must never affect the streaming connection.
+    //
+    // URL: GET /admin/metadata?mount=<mount>&mode=updinfo&song=<title>
+    // Authorization: Basic <admin_user:admin_password>
+    //
+    // Note: Icecast's /admin/metadata endpoint requires *admin* credentials,
+    // not source credentials. We reuse the source password here because many
+    // self-hosted deployments set them the same; if yours differ, add an
+    // admin_password field to Config.
+    namespace http = beast::http;
+
+    const std::string target =
+        "/admin/metadata?mount=" + url_encode(cfg_.mountpoint) +
+        "&mode=updinfo&song=" + url_encode(title);
+
+    // Capture everything needed by value so the lambda outlives this call.
+    auto self = shared_from_this();
+    auto meta_socket = std::make_shared<tcp::socket>(ioc_);
+    auto meta_resolver = std::make_shared<tcp::resolver>(ioc_);
+    const std::string host = cfg_.host;
+    const std::string port_str = std::to_string(cfg_.port);
+    const std::string auth = base64_encode(cfg_.username + ":" + cfg_.password);
+    const std::string mountpoint = cfg_.mountpoint;
+
+    meta_resolver->async_resolve(host, port_str,
+        [self, meta_socket, meta_resolver, host, port_str, target, auth, mountpoint]
+        (beast::error_code ec, tcp::resolver::results_type results) {
+            if (ec) {
+                BOOST_LOG_TRIVIAL(debug) << "[Icecast Bridge] " << mountpoint
+                    << " metadata resolve failed: " << ec.message();
+                return;
+            }
+            asio::async_connect(*meta_socket, results,
+                [self, meta_socket, meta_resolver, host, port_str, target, auth, mountpoint]
+                (beast::error_code ec2, tcp::resolver::results_type::endpoint_type) {
+                    if (ec2) {
+                        BOOST_LOG_TRIVIAL(debug) << "[Icecast Bridge] " << mountpoint
+                            << " metadata connect failed: " << ec2.message();
+                        return;
+                    }
+                    // Build and send the request.
+                    auto req = std::make_shared<http::request<http::empty_body>>(
+                        http::verb::get, target, 11);
+                    req->set(http::field::host, host + ":" + port_str);
+                    req->set(http::field::authorization, "Basic " + auth);
+                    req->set(http::field::user_agent, "tr-plugin-icecast/0.1");
+                    req->set(http::field::connection, "close");
+
+                    http::async_write(*meta_socket, *req,
+                        [self, meta_socket, meta_resolver, req, mountpoint]
+                        (beast::error_code ec3, std::size_t) {
+                            if (ec3) {
+                                BOOST_LOG_TRIVIAL(debug) << "[Icecast Bridge] " << mountpoint
+                                    << " metadata write failed: " << ec3.message();
+                                return;
+                            }
+                            // Read and discard the response.
+                            auto buf = std::make_shared<beast::flat_buffer>();
+                            auto resp = std::make_shared<
+                                http::response_parser<http::string_body>>();
+                            http::async_read(*meta_socket, *buf, *resp,
+                                [self, meta_socket, buf, resp, mountpoint]
+                                (beast::error_code ec4, std::size_t) {
+                                    if (ec4 && ec4 != beast::http::error::end_of_stream) {
+                                        BOOST_LOG_TRIVIAL(debug) << "[Icecast Bridge] "
+                                            << mountpoint
+                                            << " metadata response error: "
+                                            << ec4.message();
+                                    }
+                                    beast::error_code ignore;
+                                    meta_socket->shutdown(
+                                        tcp::socket::shutdown_both, ignore);
+                                });
+                        });
+                });
+        });
 }
 
 void IcecastSession::close() {
