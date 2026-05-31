@@ -150,7 +150,7 @@ void IcecastSession::set_metadata(const std::string& title) {
                     auto req = std::make_shared<http::request<http::empty_body>>(
                         http::verb::get, target, 11);
                     req->set(http::field::host, host + ":" + port_str);
-                    req->set(http::field::authorization, "Basic " + auth);
+                    req->set(http::field::authorization, "Basic " + base64_encode(cfg_.username + ":" + (cfg_.admin_password.empty() ? cfg_.password : cfg_.admin_password)));
                     req->set(http::field::user_agent, "tr-plugin-icecast/0.1");
                     req->set(http::field::connection, "close");
 
