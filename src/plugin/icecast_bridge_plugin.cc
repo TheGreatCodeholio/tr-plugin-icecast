@@ -16,6 +16,7 @@
 #include <boost/log/trivial.hpp>
 #include <boost/shared_ptr.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <deque>
@@ -45,6 +46,19 @@ constexpr int kGhostCleanupSeconds = 10;
 inline std::string call_hdr(const CallState& cs) {
     return log_header(cs.short_name, cs.call_num, cs.talkgroup_display, cs.freq) +
            "Icecast Bridge - ";
+}
+
+// Apply a linear gain to a block of int16 PCM samples in-place.
+// Samples are clamped to [-32768, 32767] to prevent integer overflow.
+// This is a no-op when gain == 1.0f so there is no performance cost for
+// mounts that leave gain at its default.
+inline void apply_gain(int16_t* samples, int count, float gain) {
+    if (gain == 1.0f) return;
+    for (int i = 0; i < count; ++i) {
+        float s = static_cast<float>(samples[i]) * gain;
+        s = std::clamp(s, -32768.0f, 32767.0f);
+        samples[i] = static_cast<int16_t>(s);
+    }
 }
 }  // namespace
 
@@ -175,6 +189,9 @@ public:
                 state->encoder = std::make_unique<Mp3FrameEncoder>(
                     mount_cfg->output_sample_rate, mount_cfg->bitrate_kbps,
                     mount_cfg->channels);
+                // Cache the mount's gain on the CallState so the asio thread
+                // can apply it without touching the (shared) mount config.
+                state->gain = mount_cfg->gain;
             } catch (const std::exception& e) {
                 BOOST_LOG_TRIVIAL(error) << call_hdr(*state)
                     << "Encoder init failed: " << e.what();
@@ -375,6 +392,10 @@ private:
         }
 
         try {
+            // Apply per-mount gain to the PCM frame before encoding.
+            // apply_gain() is a no-op when gain == 1.0f (the default).
+            apply_gain(cs->out_pcm.data(), kOut, cs->gain);
+
             auto bytes = cs->encoder->encode(cs->out_pcm.data(), kOut);
             cs->out_pcm.erase(cs->out_pcm.begin(), cs->out_pcm.begin() + kOut);
             cs->mp3_frame_id++;

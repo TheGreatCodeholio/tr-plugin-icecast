@@ -30,6 +30,12 @@ struct CallState {
     std::string talkgroup_display;
     double freq = 0.0;
 
+    // Linear amplitude multiplier copied from the mount's Config at encoder-
+    // init time. Applied to the resampled PCM just before LAME encoding.
+    // 1.0 = unity. Values > 1.0 boost (will clip if source is near full scale).
+    // Values < 1.0 attenuate. Samples are clamped to int16 range after scaling.
+    float gain = 1.0f;
+
     PcmRingBuffer pcm;
     std::unique_ptr<Resampler> resampler;       // input_rate -> mount output_rate
     std::unique_ptr<Mp3FrameEncoder> encoder;   // per-call so its bit reservoir

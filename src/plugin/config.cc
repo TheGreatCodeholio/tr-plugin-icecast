@@ -53,6 +53,7 @@ bool parse_plugin_config(const nlohmann::json& cfg, PluginConfig& out) {
         mc.output_sample_rate = m.value("sample_rate", 22050u);
         mc.bitrate_kbps = m.value("bitrate", 64u);
         mc.channels = m.value("channels", 1);
+        mc.gain = m.value("gain", 1.0f);
 
         if (mc.mountpoint.empty() || mc.mountpoint.front() != '/') {
             BOOST_LOG_TRIVIAL(error) << kTag
@@ -64,6 +65,17 @@ bool parse_plugin_config(const nlohmann::json& cfg, PluginConfig& out) {
                 << "duplicate mount '" << mc.mountpoint << "' in 'mounts'";
             return false;
         }
+
+        if (mc.gain <= 0.0f) {
+            BOOST_LOG_TRIVIAL(error) << kTag
+                << "mount '" << mc.mountpoint << "': gain must be > 0.0";
+            return false;
+        }
+        if (mc.gain != 1.0f) {
+            BOOST_LOG_TRIVIAL(info) << kTag
+                << "mount '" << mc.mountpoint << "': gain=" << mc.gain;
+        }
+
         out.mounts_by_name[mc.mountpoint] = std::move(mc);
     }
 

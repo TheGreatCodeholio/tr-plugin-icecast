@@ -64,6 +64,12 @@ public:
         uint32_t output_sample_rate = 22050;
         uint32_t bitrate_kbps = 64;
         int channels = 1;
+        // Linear amplitude multiplier applied to PCM before encoding.
+        // 1.0 = unity gain. 2.0 = +6 dB (doubles amplitude). 0.5 = -6 dB.
+        // Values above 1.0 will clip if the source audio is already near full
+        // scale; values below 1.0 attenuate. Samples are clamped to int16
+        // range after scaling so there is no integer overflow.
+        float gain = 1.0f;
     };
 
     // Source for the next MP3 frame to write on the wire. Returns the frame
