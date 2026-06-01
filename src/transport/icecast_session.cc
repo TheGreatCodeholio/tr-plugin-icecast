@@ -1,6 +1,5 @@
 #include "transport/icecast_session.h"
 
-#include <atomic>
 #include <boost/asio/connect.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/read_until.hpp>
@@ -297,80 +296,23 @@ void IcecastSession::read_handshake_response() {
     namespace http = beast::http;
 
     if (cfg_.legacy_source) {
-        // Legacy/Broadcastify servers may respond with "OK\r\n", an HTTP
-        // response, or nothing at all. Try reading one line with a short
-        // deadline; if nothing arrives within ~2 seconds assume the server
-        // is ready and start streaming anyway (some servers expect data
-        // immediately without sending any response).
+        // Broadcastify and some other legacy ingest servers send no response
+        // at all — they just start accepting the stream body. Wait 1 second;
+        // if nothing arrives, assume connected and start streaming.
         auto self = shared_from_this();
         BOOST_LOG_TRIVIAL(debug) << "[Icecast Bridge] " << cfg_.mountpoint
             << " legacy handshake sent, waiting for response";
-
         auto timer = std::make_shared<boost::asio::steady_timer>(ioc_);
-        timer->expires_after(std::chrono::seconds(2));
-
-        auto responded = std::make_shared<std::atomic<bool>>(false);
-
-        // Race: response arrives vs timer fires
-        timer->async_wait([self, responded, timer](const boost::system::error_code& tec) {
-            if (tec) return;  // cancelled
-            if (responded->exchange(true)) return;  // response already handled
+        timer->expires_after(std::chrono::seconds(1));
+        timer->async_wait([self, timer](const boost::system::error_code& tec) {
+            if (tec) return;
+            if (self->state_ != State::kHandshaking) return;
             BOOST_LOG_TRIVIAL(info) << "[Icecast Bridge] " << self->cfg_.mountpoint
                 << " legacy server sent no response, assuming connected";
             self->backoff_attempt_ = 0;
             self->state_ = State::kStreaming;
             self->start_pacer();
         });
-
-        boost::asio::async_read_until(*socket_, read_buf_, '\n',
-            [self, responded, timer](beast::error_code ec, std::size_t bytes_transferred) {
-                boost::system::error_code ignore;
-                timer->cancel(ignore);
-                if (responded->exchange(true)) return;  // timer already fired
-                if (ec) {
-                    // EOF or error — if it's EOF the server closed cleanly
-                    // after accepting; treat as success and start streaming.
-                    if (ec == boost::asio::error::eof ||
-                        ec == beast::http::error::end_of_stream) {
-                        BOOST_LOG_TRIVIAL(info) << "[Icecast Bridge] "
-                            << self->cfg_.mountpoint
-                            << " legacy server closed after accept, starting stream";
-                        self->backoff_attempt_ = 0;
-                        self->state_ = State::kStreaming;
-                        self->start_pacer();
-                    } else {
-                        BOOST_LOG_TRIVIAL(error) << "[Icecast Bridge] "
-                            << self->cfg_.mountpoint
-                            << " legacy read error: " << ec.message();
-                        self->fail("handshake_read", ec);
-                    }
-                    return;
-                }
-                const char* data = static_cast<const char*>(
-                    self->read_buf_.data().data());
-                std::string line(data, bytes_transferred);
-                self->read_buf_.consume(bytes_transferred);
-                BOOST_LOG_TRIVIAL(info) << "[Icecast Bridge] "
-                    << self->cfg_.mountpoint
-                    << " legacy response: " << line;
-                // Accept "OK", "HTTP/1.x 200", or any 2xx
-                bool ok = line.find("OK") != std::string::npos ||
-                          line.find(" 200") != std::string::npos ||
-                          line.find(" 201") != std::string::npos;
-                if (!ok) {
-                    BOOST_LOG_TRIVIAL(error) << "[Icecast Bridge] "
-                        << self->cfg_.mountpoint
-                        << " legacy server rejected: " << line;
-                    beast::error_code synthetic;
-                    self->fail("handshake_status", synthetic);
-                    return;
-                }
-                BOOST_LOG_TRIVIAL(info) << "[Icecast Bridge] "
-                    << self->cfg_.mountpoint << " connected (legacy), streaming";
-                self->backoff_attempt_ = 0;
-                self->state_ = State::kStreaming;
-                self->start_pacer();
-            });
         return;
     }
 
