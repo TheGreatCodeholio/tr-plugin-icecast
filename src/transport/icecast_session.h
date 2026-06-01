@@ -45,7 +45,13 @@ public:
         // admin_user defaults to "admin"; admin_password defaults to password.
         std::string admin_user = "admin";
         std::string admin_password;
-        // ICY StreamTitle format string. Supported placeholders:
+        // Use legacy SOURCE method instead of HTTP PUT for Shoutcast/old
+        // Icecast 1.x servers (e.g. Broadcastify). Sends:
+        //   SOURCE /mount HTTP/1.0\r\n
+        //   Authorization: Basic <base64>\r\n
+        //   ...\r\n\r\n
+        // instead of a standard HTTP PUT request.
+        bool legacy_source = false;
         //   {talkgroup_display}, {talkgroup}, {talker_alias}, {time},
         //   {short_name}, {freq}
         // {talker_alias} resolves to the unit tag if found, the numeric src ID
@@ -115,6 +121,7 @@ private:
 
     std::unique_ptr<beast::http::request<beast::http::empty_body>> req_;
     std::unique_ptr<beast::http::response_parser<beast::http::empty_body>> resp_parser_;
+    std::string legacy_handshake_buf_;  // raw SOURCE request buffer for legacy mode
 
     std::chrono::nanoseconds frame_period_{0};
     std::chrono::steady_clock::time_point next_tick_{};

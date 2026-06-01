@@ -22,6 +22,7 @@ Requires Trunk Recorder 5.0 or later, and the LAME and libsamplerate audio libra
 - [Stream Metadata](#stream-metadata)
 - [Listening](#listening)
 - [Icecast Server](#icecast-server)
+- [Broadcastify](#broadcastify)
 
 ## Install
 
@@ -80,6 +81,7 @@ Each entry in the `mounts` array defines one live stream. Listeners connect to t
 | sample_rate        |          | 22050         | int        | Output sample rate in Hz. 22050 is plenty for voice.                                                         |
 | bitrate            |          | 64            | int        | MP3 bitrate in kbps.                                                                                         |
 | channels           |          | 1             | int        | `1` for mono (recommended for radio), `2` for stereo.                                                        |
+| legacy_source      |          | false         | true/false | Use the legacy SOURCE method instead of HTTP PUT. Required for Broadcastify and other Shoutcast/Icecast 1.x ingest servers. |
 | gain               |          | 1.0           | float      | Linear amplitude multiplier applied before MP3 encoding. `1.0` = unity. `2.0` ≈ +6 dB. `0.5` ≈ -6 dB. Samples are clamped to prevent clipping. |
 | admin_user         |          | admin         | string     | Icecast admin username used to push stream metadata updates. Must match `<admin-user>` in `icecast.xml`.     |
 | admin_password     |          | source_password | string   | Icecast admin password for metadata updates. Defaults to `source_password` if not set. Must match `<admin-password>` in `icecast.xml`. |
@@ -261,3 +263,30 @@ A few things must line up between this plugin's config and the Icecast server's 
 - Make sure `<limits>` allows enough `<sources>` for the number of mounts you configure.
 
 No special tuning is required — Icecast accepts MP3 source clients out of the box. Mountpoints are created automatically when the plugin connects, so they do not need to be pre-declared in `icecast.xml`.
+
+## Broadcastify
+
+Broadcastify's ingest servers use the legacy Shoutcast/Icecast 1.x SOURCE method rather than HTTP PUT. Set `"legacy_source": true` on any mount pointed at Broadcastify:
+
+```json
+{
+  "name": "Broadcastify Icecast",
+  "library": "libtr_plugin_icecast.so",
+  "host": "audio3.broadcastify.com",
+  "port": 80,
+  "source_user": "source",
+  "source_password": "YOUR_STREAM_PASSWORD",
+  "mounts": [
+    {
+      "mount": "/your_stream_key",
+      "sample_rate": 22050,
+      "bitrate": 16,
+      "channels": 1,
+      "legacy_source": true
+    }
+  ],
+  "systems": [...]
+}
+```
+
+Note that Broadcastify does not expose an admin metadata endpoint, so `admin_user` and `admin_password` are not needed on Broadcastify mounts — metadata update attempts will fail silently and have no effect on the audio stream.

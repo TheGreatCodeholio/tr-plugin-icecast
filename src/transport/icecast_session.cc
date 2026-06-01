@@ -230,6 +230,35 @@ void IcecastSession::on_connect(beast::error_code ec,
 
 void IcecastSession::send_source_request() {
     namespace http = beast::http;
+
+    if (cfg_.legacy_source) {
+        // Legacy Shoutcast/Icecast 1.x SOURCE method — used by Broadcastify
+        // and other older ingest servers that don't accept HTTP PUT.
+        std::ostringstream ss;
+        ss << "SOURCE " << cfg_.mountpoint << " HTTP/1.0\r\n"
+           << "Authorization: Basic "
+           << base64_encode(cfg_.username + ":" + cfg_.password) << "\r\n"
+           << "User-Agent: tr-plugin-icecast/0.1\r\n"
+           << "Content-Type: audio/mpeg\r\n"
+           << "ice-name: " << cfg_.display_name << "\r\n"
+           << "ice-description: " << cfg_.description << "\r\n"
+           << "ice-genre: " << cfg_.genre << "\r\n"
+           << "ice-bitrate: " << cfg_.bitrate_kbps << "\r\n"
+           << "ice-public: " << (cfg_.is_public ? "1" : "0") << "\r\n"
+           << "ice-audio-info: ice-samplerate=" << cfg_.output_sample_rate
+           << ";ice-bitrate=" << cfg_.bitrate_kbps
+           << ";ice-channels=" << cfg_.channels << "\r\n"
+           << "\r\n";
+        legacy_handshake_buf_ = ss.str();
+        auto self = shared_from_this();
+        asio::async_write(*socket_,
+            asio::buffer(legacy_handshake_buf_),
+            [self](beast::error_code ec, std::size_t n) {
+                self->on_handshake_write(ec, n);
+            });
+        return;
+    }
+
     req_ = std::make_unique<http::request<http::empty_body>>(
         http::verb::put, cfg_.mountpoint, 11);
     req_->set(http::field::host, cfg_.host + ":" + std::to_string(cfg_.port));
@@ -264,6 +293,35 @@ void IcecastSession::on_handshake_write(beast::error_code ec, std::size_t) {
 
 void IcecastSession::read_handshake_response() {
     namespace http = beast::http;
+
+    if (cfg_.legacy_source) {
+        // Legacy servers respond with "OK" (not valid HTTP). Read up to the
+        // first \n and check for OK.
+        auto self = shared_from_this();
+        asio::async_read_until(*socket_, read_buf_, '\n',
+            [self](beast::error_code ec, std::size_t) {
+                if (ec) { self->fail("handshake_read", ec); return; }
+                std::string line{
+                    asio::buffers_begin(self->read_buf_.data()),
+                    asio::buffers_end(self->read_buf_.data())};
+                self->read_buf_.consume(self->read_buf_.size());
+                if (line.find("OK") == std::string::npos) {
+                    BOOST_LOG_TRIVIAL(error) << "[Icecast Bridge] "
+                        << self->cfg_.mountpoint
+                        << " legacy server rejected connection: " << line;
+                    beast::error_code synthetic;
+                    self->fail("handshake_status", synthetic);
+                    return;
+                }
+                BOOST_LOG_TRIVIAL(info) << "[Icecast Bridge] "
+                    << self->cfg_.mountpoint << " connected (legacy), streaming";
+                self->backoff_attempt_ = 0;
+                self->state_ = State::kStreaming;
+                self->start_pacer();
+            });
+        return;
+    }
+
     resp_parser_ = std::make_unique<http::response_parser<http::empty_body>>();
     // Icecast doesn't send Content-Length on the success response (it just
     // keeps the socket open for our streaming body). Tell the parser to stop
