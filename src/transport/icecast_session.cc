@@ -104,7 +104,14 @@ void IcecastSession::set_frame_producer(FrameProducer p) {
 }
 
 void IcecastSession::set_metadata(const std::string& title) {
-    // Out-of-band metadata update via Icecast's admin endpoint.
+    // Always update pending in-band metadata — injected at next metaint boundary.
+    if (cfg_.icy_metaint > 0) {
+        pending_metadata_ = title;
+        metadata_dirty_ = true;
+    }
+
+    // For non-legacy mounts also push out-of-band via Icecast admin endpoint.
+    if (cfg_.legacy_source) return;
     // Opens a short-lived TCP connection, sends one HTTP GET, reads the
     // response header, then closes. Errors are logged and swallowed — a
     // metadata failure must never affect the streaming connection.
@@ -248,8 +255,10 @@ void IcecastSession::send_source_request() {
            << "ice-public: " << (cfg_.is_public ? "1" : "0") << "\r\n"
            << "ice-audio-info: ice-samplerate=" << cfg_.output_sample_rate
            << ";ice-bitrate=" << cfg_.bitrate_kbps
-           << ";ice-channels=" << cfg_.channels << "\r\n"
-           << "\r\n";
+           << ";ice-channels=" << cfg_.channels << "\r\n";
+        if (cfg_.icy_metaint > 0)
+            ss << "icy-metaint: " << cfg_.icy_metaint << "\r\n";
+        ss << "\r\n";
         legacy_handshake_buf_ = ss.str();
         auto self = shared_from_this();
         asio::async_write(*socket_,
@@ -279,6 +288,8 @@ void IcecastSession::send_source_request() {
               "ice-samplerate=" + std::to_string(cfg_.output_sample_rate) +
               ";ice-bitrate=" + std::to_string(cfg_.bitrate_kbps) +
               ";ice-channels=" + std::to_string(cfg_.channels));
+    if (cfg_.icy_metaint > 0)
+        req_->set("Icy-MetaData", "1");
 
     auto self = shared_from_this();
     beast::http::async_write(*socket_, *req_,
@@ -355,6 +366,60 @@ void IcecastSession::on_handshake_response(beast::error_code ec, std::size_t) {
     start_pacer();
 }
 
+// ---- in-band ICY metadata ---------------------------------------------------
+
+std::vector<uint8_t> IcecastSession::build_icy_block(const std::string& title) {
+    // ICY metadata block format:
+    //   StreamTitle='<title>';
+    // Padded with null bytes to a multiple of 16, prefixed with 1-byte length
+    // (padded_length / 16). A zero byte means no metadata this interval.
+    std::string content = "StreamTitle='" + title + "';";
+    size_t padded = ((content.size() + 15) / 16) * 16;
+    uint8_t len_byte = static_cast<uint8_t>(padded / 16);
+    std::vector<uint8_t> block;
+    block.reserve(1 + padded);
+    block.push_back(len_byte);
+    block.insert(block.end(), content.begin(), content.end());
+    block.resize(1 + padded, 0);  // zero-pad
+    return block;
+}
+
+void IcecastSession::write_with_meta(std::vector<uint8_t> bytes) {
+    if (cfg_.icy_metaint == 0) {
+        // In-band metadata disabled — write frame directly.
+        write_queue_.push_back(std::move(bytes));
+        return;
+    }
+
+    size_t pos = 0;
+    while (pos < bytes.size()) {
+        uint32_t remaining = cfg_.icy_metaint - bytes_since_meta_;
+        size_t chunk = std::min(static_cast<size_t>(remaining),
+                                bytes.size() - pos);
+        // Enqueue this chunk of MP3 data.
+        write_queue_.push_back(
+            std::vector<uint8_t>(bytes.begin() + pos,
+                                 bytes.begin() + pos + chunk));
+        pos += chunk;
+        bytes_since_meta_ += static_cast<uint32_t>(chunk);
+
+        if (bytes_since_meta_ == cfg_.icy_metaint) {
+            // Boundary reached — inject metadata block.
+            bytes_since_meta_ = 0;
+            if (metadata_dirty_) {
+                current_metadata_ = pending_metadata_;
+                metadata_dirty_ = false;
+            }
+            if (!current_metadata_.empty()) {
+                write_queue_.push_back(build_icy_block(current_metadata_));
+            } else {
+                // Empty block — single zero byte.
+                write_queue_.push_back({0x00});
+            }
+        }
+    }
+}
+
 // ---- pacer + write loop -----------------------------------------------------
 
 void IcecastSession::start_pacer() {
@@ -391,7 +456,7 @@ void IcecastSession::on_pacer_tick(const boost::system::error_code& ec) {
 }
 
 void IcecastSession::write_frame(std::vector<uint8_t> bytes) {
-    write_queue_.push_back(std::move(bytes));
+    write_with_meta(std::move(bytes));
     if (write_in_flight_) return;
     write_in_flight_ = true;
     auto self = shared_from_this();
@@ -420,6 +485,7 @@ void IcecastSession::fail(const std::string& where, beast::error_code ec) {
     if (socket_ && socket_->is_open()) socket_->close(ignore);
     write_queue_.clear();
     write_in_flight_ = false;
+    bytes_since_meta_ = 0;  // reset metaint counter on reconnect
     if (state_ == State::kClosing || state_ == State::kClosed) return;
     schedule_reconnect();
 }

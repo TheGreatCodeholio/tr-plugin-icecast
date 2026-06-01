@@ -82,6 +82,7 @@ Each entry in the `mounts` array defines one live stream. Listeners connect to t
 | bitrate            |          | 64            | int        | MP3 bitrate in kbps.                                                                                         |
 | channels           |          | 1             | int        | `1` for mono (recommended for radio), `2` for stereo.                                                        |
 | legacy_source      |          | false         | true/false | Use the legacy SOURCE method instead of HTTP PUT. Required for Broadcastify and other Shoutcast/Icecast 1.x ingest servers. |
+| icy_metaint        |          | 8192          | int        | In-band ICY metadata injection interval in bytes. A `StreamTitle` block is injected every N bytes of MP3 data. Set to `0` to disable. 8192 is the most widely supported value. |
 | gain               |          | 1.0           | float      | Linear amplitude multiplier applied before MP3 encoding. `1.0` = unity. `2.0` ≈ +6 dB. `0.5` ≈ -6 dB. Samples are clamped to prevent clipping. |
 | admin_user         |          | admin         | string     | Icecast admin username used to push stream metadata updates. Must match `<admin-user>` in `icecast.xml`.     |
 | admin_password     |          | source_password | string   | Icecast admin password for metadata updates. Defaults to `source_password` if not set. Must match `<admin-password>` in `icecast.xml`. |
@@ -178,7 +179,13 @@ If the plugin cannot be found, or it is being run from a different location, it 
 
 ## Stream Metadata
 
-The plugin pushes ICY `StreamTitle` updates to Icecast via its admin metadata endpoint whenever a new call becomes active or the transmitting unit changes mid-call. Players that support ICY metadata (Winamp, VLC, most browser-based players) will display this in real time.
+The plugin pushes ICY `StreamTitle` updates to Icecast using two complementary methods:
+
+**Out-of-band** (non-legacy mounts): HTTP GET to Icecast's `/admin/metadata` endpoint. Fast and reliable for local Icecast servers. Requires `admin_user` and `admin_password`.
+
+**In-band** (all mounts): `StreamTitle` blocks injected directly into the MP3 stream at `icy_metaint` byte intervals (default 8192). Works with Broadcastify, Shoutcast, and any player that supports ICY metadata. Both methods fire simultaneously on non-legacy mounts.
+
+Players that support ICY metadata (Winamp, VLC, most browser-based players) will display the stream title in real time.
 
 ### Format string
 
@@ -282,11 +289,12 @@ Broadcastify's ingest servers use the legacy Shoutcast/Icecast 1.x SOURCE method
       "sample_rate": 22050,
       "bitrate": 16,
       "channels": 1,
-      "legacy_source": true
+      "legacy_source": true,
+      "icy_metaint": 8192
     }
   ],
   "systems": [...]
 }
 ```
 
-Note that Broadcastify does not expose an admin metadata endpoint, so `admin_user` and `admin_password` are not needed on Broadcastify mounts — metadata update attempts will fail silently and have no effect on the audio stream.
+Note that Broadcastify does not expose an admin metadata endpoint, so `admin_user` and `admin_password` are not needed on Broadcastify mounts. Metadata is delivered in-band via ICY blocks using `icy_metaint`. Broadcastify's own player does not display stream metadata to listeners — it uses the feed name from their database instead — but the metadata is present in the stream for any direct listeners.

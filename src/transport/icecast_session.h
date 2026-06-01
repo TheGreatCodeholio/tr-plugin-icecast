@@ -52,6 +52,11 @@ public:
         //   ...\r\n\r\n
         // instead of a standard HTTP PUT request.
         bool legacy_source = false;
+        // In-band ICY metadata interval in bytes. A metadata block is injected
+        // into the MP3 stream every icy_metaint bytes. 0 = disabled.
+        // 8192 is the most widely supported value. Both local Icecast and
+        // Broadcastify support in-band metadata when this is set.
+        uint32_t icy_metaint = 8192;
         //   {talkgroup_display}, {talkgroup}, {talker_alias}, {time},
         //   {short_name}, {freq}
         // {talker_alias} resolves to the unit tag if found, the numeric src ID
@@ -122,6 +127,24 @@ private:
     std::unique_ptr<beast::http::request<beast::http::empty_body>> req_;
     std::unique_ptr<beast::http::response_parser<beast::http::empty_body>> resp_parser_;
     std::string legacy_handshake_buf_;  // raw SOURCE request buffer for legacy mode
+
+    // In-band ICY metadata state. Access only on the asio thread.
+    // pending_metadata_ is set by set_metadata() and injected at the next
+    // metaint boundary. bytes_since_meta_ tracks bytes written since the
+    // last injection. metadata_dirty_ ensures we always inject once on first
+    // connection even if no metadata has been set yet.
+    std::string pending_metadata_;
+    std::string current_metadata_;
+    uint32_t bytes_since_meta_ = 0;
+    bool metadata_dirty_ = false;
+
+    // Build a padded ICY metadata block for the given title.
+    // Format: 1-byte length (n), then n*16 bytes of "StreamTitle='...';"+padding
+    static std::vector<uint8_t> build_icy_block(const std::string& title);
+
+    // Split `bytes` at metaint boundaries, injecting ICY blocks as needed,
+    // and enqueue the resulting chunks for writing.
+    void write_with_meta(std::vector<uint8_t> bytes);
 
     std::chrono::nanoseconds frame_period_{0};
     std::chrono::steady_clock::time_point next_tick_{};

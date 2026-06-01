@@ -55,6 +55,7 @@ bool parse_plugin_config(const nlohmann::json& cfg, PluginConfig& out) {
         mc.channels = m.value("channels", 1);
         mc.gain = m.value("gain", 1.0f);
         mc.legacy_source = m.value("legacy_source", false);
+        mc.icy_metaint = m.value("icy_metaint", 8192u);
         mc.admin_user = m.value("admin_user", std::string{"admin"});
         mc.admin_password = m.value("admin_password", std::string{});
         mc.metadata_format  = m.value("metadata_format",
