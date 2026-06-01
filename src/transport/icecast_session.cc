@@ -2,6 +2,7 @@
 
 #include <boost/asio/connect.hpp>
 #include <boost/asio/post.hpp>
+#include <boost/asio/read_until.hpp>
 #include <boost/asio/write.hpp>
 #include <boost/beast/http/read.hpp>
 #include <boost/beast/http/write.hpp>
@@ -298,13 +299,13 @@ void IcecastSession::read_handshake_response() {
         // Legacy servers respond with "OK" (not valid HTTP). Read up to the
         // first \n and check for OK.
         auto self = shared_from_this();
-        asio::async_read_until(*socket_, read_buf_, '\n',
-            [self](beast::error_code ec, std::size_t) {
+        boost::asio::async_read_until(*socket_, read_buf_, '\n',
+            [self](beast::error_code ec, std::size_t bytes_transferred) {
                 if (ec) { self->fail("handshake_read", ec); return; }
-                std::string line{
-                    asio::buffers_begin(self->read_buf_.data()),
-                    asio::buffers_end(self->read_buf_.data())};
-                self->read_buf_.consume(self->read_buf_.size());
+                const char* data = static_cast<const char*>(
+                    self->read_buf_.data().data());
+                std::string line(data, bytes_transferred);
+                self->read_buf_.consume(bytes_transferred);
                 if (line.find("OK") == std::string::npos) {
                     BOOST_LOG_TRIVIAL(error) << "[Icecast Bridge] "
                         << self->cfg_.mountpoint
