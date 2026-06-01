@@ -299,13 +299,23 @@ void IcecastSession::read_handshake_response() {
         // Legacy servers respond with "OK" (not valid HTTP). Read up to the
         // first \n and check for OK.
         auto self = shared_from_this();
+        BOOST_LOG_TRIVIAL(debug) << "[Icecast Bridge] " << cfg_.mountpoint
+            << " legacy handshake sent, waiting for response";
         boost::asio::async_read_until(*socket_, read_buf_, '\n',
             [self](beast::error_code ec, std::size_t bytes_transferred) {
-                if (ec) { self->fail("handshake_read", ec); return; }
+                if (ec) {
+                    BOOST_LOG_TRIVIAL(error) << "[Icecast Bridge] "
+                        << self->cfg_.mountpoint
+                        << " legacy read error: " << ec.message();
+                    self->fail("handshake_read", ec); return;
+                }
                 const char* data = static_cast<const char*>(
                     self->read_buf_.data().data());
                 std::string line(data, bytes_transferred);
                 self->read_buf_.consume(bytes_transferred);
+                BOOST_LOG_TRIVIAL(info) << "[Icecast Bridge] "
+                    << self->cfg_.mountpoint
+                    << " legacy response: " << line;
                 if (line.find("OK") == std::string::npos) {
                     BOOST_LOG_TRIVIAL(error) << "[Icecast Bridge] "
                         << self->cfg_.mountpoint
