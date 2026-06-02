@@ -45,6 +45,25 @@ public:
         // admin_user defaults to "admin"; admin_password defaults to password.
         std::string admin_user = "admin";
         std::string admin_password;
+        // Use legacy SOURCE method instead of HTTP PUT for Shoutcast/old
+        // Icecast 1.x servers (e.g. Broadcastify). Sends:
+        //   SOURCE /mount HTTP/1.0\r\n
+        //   Authorization: Basic <base64>\r\n
+        //   ...\r\n\r\n
+        // instead of a standard HTTP PUT request.
+        bool legacy_source = false;
+        // In-band ICY metadata interval in bytes. A metadata block is injected
+        // into the MP3 stream every icy_metaint bytes. 0 = disabled.
+        // 8192 is the most widely supported value. Both local Icecast and
+        // Broadcastify support in-band metadata when this is set.
+        uint32_t icy_metaint = 8192;
+        //   {talkgroup_display}, {talkgroup}, {talker_alias}, {time},
+        //   {short_name}, {freq}
+        // {talker_alias} resolves to the unit tag if found, the numeric src ID
+        // if not, and collapses with surrounding whitespace if src ID is also 0.
+        std::string metadata_format  = "TG: {talkgroup_tag} ({talkgroup}) {talker_alias} {time}";
+        // Stream title pushed when no call is active on this mount.
+        std::string metadata_standby = "Standby";
     };
 
     using FrameProducer = std::function<std::vector<uint8_t>()>;
@@ -107,6 +126,25 @@ private:
 
     std::unique_ptr<beast::http::request<beast::http::empty_body>> req_;
     std::unique_ptr<beast::http::response_parser<beast::http::empty_body>> resp_parser_;
+    std::string legacy_handshake_buf_;  // raw SOURCE request buffer for legacy mode
+
+    // In-band ICY metadata state. Access only on the asio thread.
+    // pending_metadata_ is set by set_metadata() and injected at the next
+    // metaint boundary. bytes_since_meta_ tracks bytes written since the
+    // last injection. metadata_dirty_ ensures we always inject once on first
+    // connection even if no metadata has been set yet.
+    std::string pending_metadata_;
+    std::string current_metadata_;
+    uint32_t bytes_since_meta_ = 0;
+    bool metadata_dirty_ = false;
+
+    // Build a padded ICY metadata block for the given title.
+    // Format: 1-byte length (n), then n*16 bytes of "StreamTitle='...';"+padding
+    static std::vector<uint8_t> build_icy_block(const std::string& title);
+
+    // Split `bytes` at metaint boundaries, injecting ICY blocks as needed,
+    // and enqueue the resulting chunks for writing.
+    void write_with_meta(std::vector<uint8_t> bytes);
 
     std::chrono::nanoseconds frame_period_{0};
     std::chrono::steady_clock::time_point next_tick_{};

@@ -64,17 +64,88 @@ inline void apply_gain(int16_t* samples, int count, float gain) {
     }
 }
 
-// Build the ICY StreamTitle string shown in listeners' players.
-// Format: "TG: <talkgroup_display> (<talkgroup>) <talker_alias> <HH:MM:SS>"
+// Strip ANSI terminal escape sequences (e.g. \033[0m) from a string.
+// trunk-recorder's get_talkgroup_display() embeds color codes intended for
+// terminal output; these appear as garbage characters in ICY metadata.
+std::string strip_ansi(const std::string& in) {
+    std::string out;
+    out.reserve(in.size());
+    bool in_esc = false;
+    for (size_t i = 0; i < in.size(); ++i) {
+        if (in_esc) {
+            if (std::isalpha(static_cast<unsigned char>(in[i]))) in_esc = false;
+        } else if (in[i] == '\033' && i + 1 < in.size() && in[i+1] == '[') {
+            in_esc = true;
+            ++i;  // skip '['
+        } else {
+            out.push_back(in[i]);
+        }
+    }
+    return out;
+}
+
+// Substitute a single {token} in `fmt` with `value`. When `value` is empty
+// and `collapse_if_empty` is true, also eats one space immediately before or
+// after the token so the caller doesn't end up with a double-space.
+std::string substitute(const std::string& fmt,
+                        const std::string& token,
+                        const std::string& value,
+                        bool collapse_if_empty = false) {
+    const std::string placeholder = "{" + token + "}";
+    std::string out;
+    out.reserve(fmt.size() + value.size());
+    size_t pos = 0;
+    while (pos < fmt.size()) {
+        size_t found = fmt.find(placeholder, pos);
+        if (found == std::string::npos) {
+            out.append(fmt, pos, std::string::npos);
+            break;
+        }
+        out.append(fmt, pos, found - pos);
+        if (value.empty() && collapse_if_empty) {
+            // Remove one adjacent space: prefer the space before the token,
+            // fall back to the space after.
+            if (!out.empty() && out.back() == ' ') {
+                out.pop_back();
+            } else if (found + placeholder.size() < fmt.size() &&
+                       fmt[found + placeholder.size()] == ' ') {
+                pos = found + placeholder.size() + 1;
+                continue;
+            }
+        } else {
+            out.append(value);
+        }
+        pos = found + placeholder.size();
+    }
+    return out;
+}
+
+// Build the ICY StreamTitle string from a format template.
 //
-// talker_alias is omitted (no trailing space) when empty — e.g. when the
-// system has no unit tags file configured or the source ID isn't tagged.
-//
-// The timestamp is local wall-clock time so dispatchers and listeners share
-// a common reference without needing to know the server timezone.
-std::string build_metadata(const std::string& talkgroup_display,
+// Supported placeholders:
+//   {talkgroup_display} - formatted display string (ANSI stripped)
+//   {talkgroup_tag}     - raw alpha tag, no ANSI codes
+//   {talkgroup}         - numeric TGID
+//   {talker_alias}      - unit tag if found, src ID if not, collapses if src 0
+//   {time}              - local HH:MM:SS
+//   {short_name}        - system short name
+//   {freq}              - frequency in MHz
+//   {emergency}         - "EMERGENCY" when true, collapses with surrounding space if false
+std::string build_metadata(const std::string& fmt,
+                            const std::string& talkgroup_display,
+                            const std::string& talkgroup_tag,
                             long talkgroup,
-                            const std::string& talker_alias) {
+                            long src_id,
+                            const std::string& talker_alias,
+                            const std::string& short_name,
+                            double freq,
+                            bool emergency) {
+    // Resolve talker: alias > src_id > empty
+    std::string talker = talker_alias;
+    if (talker.empty() && src_id > 0) {
+        talker = std::to_string(src_id);
+    }
+
     // Local time
     std::time_t now = std::time(nullptr);
     std::tm tm_local{};
@@ -83,17 +154,22 @@ std::string build_metadata(const std::string& talkgroup_display,
 #else
     localtime_r(&now, &tm_local);
 #endif
-    char timebuf[9];  // "HH:MM:SS\0"
+    char timebuf[9];
     std::strftime(timebuf, sizeof(timebuf), "%H:%M:%S", &tm_local);
 
-    std::ostringstream oss;
-    oss << "TG: " << talkgroup_display
-        << " (" << talkgroup << ")";
-    if (!talker_alias.empty()) {
-        oss << " " << talker_alias;
-    }
-    oss << " " << timebuf;
-    return oss.str();
+    std::ostringstream freq_ss;
+    freq_ss << std::fixed << std::setprecision(6) << freq;
+
+    std::string out = fmt;
+    out = substitute(out, "talkgroup_display", strip_ansi(talkgroup_display));
+    out = substitute(out, "talkgroup_tag",     talkgroup_tag);
+    out = substitute(out, "talkgroup",         std::to_string(talkgroup));
+    out = substitute(out, "talker_alias",      talker,                        /*collapse=*/true);
+    out = substitute(out, "time",              timebuf);
+    out = substitute(out, "short_name",        short_name);
+    out = substitute(out, "freq",              freq_ss.str());
+    out = substitute(out, "emergency",         emergency ? "EMERGENCY" : "", /*collapse=*/true);
+    return out;
 }
 }  // namespace
 
@@ -225,6 +301,8 @@ public:
                     mount_cfg->output_sample_rate, mount_cfg->bitrate_kbps,
                     mount_cfg->channels);
                 state->gain = mount_cfg->gain;
+                state->metadata_format  = mount_cfg->metadata_format;
+                state->metadata_standby = mount_cfg->metadata_standby;
             } catch (const std::exception& e) {
                 BOOST_LOG_TRIVIAL(error) << call_hdr(*state)
                     << "Encoder init failed: " << e.what();
@@ -236,12 +314,13 @@ public:
             });
         }
 
-        // Check whether the transmitting unit has changed. If so (or on the
-        // very first chunk, where last_src_id == -1), push a metadata update
-        // to Icecast so listeners' players show the new talker.
+        // Check whether the transmitting unit or emergency state has changed.
+        // Either triggers a metadata update so the player reflects the new info.
         const long src_id = call->get_current_source_id();
-        if (src_id != state->last_src_id) {
+        const bool is_emergency = call->get_emergency();
+        if (src_id != state->last_src_id || is_emergency != state->emergency) {
             state->last_src_id = src_id;
+            state->emergency   = is_emergency;
 
             // Resolve the talker alias: check the system's unit tags (respects
             // the TAG_USER_FIRST / TAG_OTA_FIRST / TAG_USER_ONLY mode set in
@@ -253,7 +332,10 @@ public:
             }
 
             const std::string meta = build_metadata(
-                state->talkgroup_display, state->talkgroup, talker_alias);
+                state->metadata_format,
+                state->talkgroup_display, state->talkgroup_tag,
+                state->talkgroup, src_id, talker_alias,
+                state->short_name, state->freq, state->emergency);
 
             BOOST_LOG_TRIVIAL(debug) << call_hdr(*state)
                 << "Metadata update: \"" << meta << "\"";
@@ -310,6 +392,7 @@ private:
         state->short_name = short_name;
         state->talkgroup = tg;
         state->talkgroup_display = call->get_talkgroup_display();
+        state->talkgroup_tag     = call->get_talkgroup_tag();
         state->freq = call->get_freq();
         registry_.insert(call_num, state);
         BOOST_LOG_TRIVIAL(info) << call_hdr(*state)
@@ -487,7 +570,7 @@ private:
             // Detach producer; session reverts to silence-only.
             if (cs->session) cs->session->set_frame_producer(nullptr);
             // Reset metadata to standby so listeners know the channel is idle.
-            if (cs->session) cs->session->set_metadata("Standby");
+            if (cs->session) cs->session->set_metadata(cs->metadata_standby);
             return;
         }
 

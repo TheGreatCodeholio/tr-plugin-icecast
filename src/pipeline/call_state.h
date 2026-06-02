@@ -27,14 +27,20 @@ struct CallState {
     // trunk-recorder's bundled plugins use (short_name / TG / freq).
     std::string short_name;
     long talkgroup = 0;
-    std::string talkgroup_display;
+    std::string talkgroup_display;   // formatted display string (ANSI stripped at use)
+    std::string talkgroup_tag;       // raw alpha tag, no ANSI codes
     double freq = 0.0;
+    bool emergency = false;          // updated each audio_stream callback
 
     // Linear amplitude multiplier copied from the mount's Config at encoder-
     // init time. Applied to the resampled PCM just before LAME encoding.
     // 1.0 = unity. Values > 1.0 boost (will clip if source is near full scale).
     // Values < 1.0 attenuate. Samples are clamped to int16 range after scaling.
     float gain = 1.0f;
+
+    // ICY metadata format string and standby title, copied from mount Config.
+    std::string metadata_format;
+    std::string metadata_standby;
 
     // Talker alias tracking. last_src_id holds the source/unit ID of the most
     // recently seen transmitter on this call. Compared in audio_stream against
